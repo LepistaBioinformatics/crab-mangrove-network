@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/LepistaBioinformatics/crab-reef-network/internal/actor"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/actor"
 )
 
 type fakeMembers struct {
@@ -123,7 +123,7 @@ func TestIncompleteTupleIsRefused(t *testing.T) {
 	}
 }
 
-func TestNonReefIdentityIsRefused(t *testing.T) {
+func TestNonMangroveIdentityIsRefused(t *testing.T) {
 	for _, addr := range []string{"https://mastodon.example/users/bob", "alice@example.com", "*", ""} {
 		if err := Check(caller, members(), []string{addr}, Options{}); err == nil {
 			t.Errorf("%q was accepted as an addressee", addr)

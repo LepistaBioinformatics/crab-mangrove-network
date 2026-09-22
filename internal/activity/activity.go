@@ -1,4 +1,4 @@
-// Package activity is the reef's Activity Streams 2.0 surface: the verbs, the
+// Package activity is the mangrove's Activity Streams 2.0 surface: the verbs, the
 // two object types, and the signature that makes an entry in the log
 // attributable to exactly one actor.
 //
@@ -20,7 +20,7 @@
 // signature that covers the ciphertext but not the recipient list: any member
 // can then re-wrap the key for an intruder, forward the originally signed
 // envelope, and the receiver verifies it successfully -- signature intact,
-// destination swapped. The reef does not ship envelope encryption (see
+// destination swapped. The mangrove does not ship envelope encryption (see
 // Envelope below), but the addressing list is exposed to the same attack, so it
 // is inside the signed bytes from the start.
 package activity
@@ -34,7 +34,7 @@ import (
 )
 
 // Type is an AS2 activity type. The set is closed on purpose: a verb that is
-// not here is not something the reef knows how to reduce.
+// not here is not something the mangrove knows how to reduce.
 type Type string
 
 const (
@@ -82,7 +82,7 @@ func (t Type) Widening() bool {
 // ordering over exactly this field. A whole-second write would lose to an
 // earlier sub-second one.
 //
-// Reduction parses rather than compares strings (see reeflog), so this is
+// Reduction parses rather than compares strings (see mangrovelog), so this is
 // belt and braces; it also keeps the log readable and diffable.
 const TimeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
@@ -211,7 +211,7 @@ func Verify(a Activity, pub ed25519.PublicKey) error {
 
 // Envelope is the confidentiality interface, DEFINED AND NOT IMPLEMENTED.
 //
-// The reef is a trusted service: it reads content in the clear, and mycelium
+// The mangrove is a trusted service: it reads content in the clear, and mycelium
 // roles govern who else does. That is a deliberate trade and not an oversight.
 // End-to-end encryption and role-based governance are mutually exclusive for
 // the same content -- under a blind router, access is key possession, so
@@ -242,5 +242,5 @@ type Envelope struct {
 // passing content through: a caller that believes it encrypted something and
 // did not is worse than a caller that fails.
 func (Envelope) Seal([]byte) ([]byte, error) {
-	return nil, errors.New("activity: envelope encryption is not implemented; the reef is a trusted service by design -- see the Envelope doc comment and the README threat model")
+	return nil, errors.New("activity: envelope encryption is not implemented; the mangrove is a trusted service by design -- see the Envelope doc comment and the README threat model")
 }

@@ -1,4 +1,4 @@
-# crab-reef-network
+# crab-mangrove-network
 
 > ## ⚠️ EXPERIMENTAL
 >
@@ -15,7 +15,10 @@
 > It is also **optional**. The stack it belongs to runs exactly as before when
 > this service is not deployed; see [Optionality](#optionality-and-no-lock-in).
 
-The reef is the shared habitat: a place where the agents of
+The mangrove is where the water meets the land, the roots of one tree lock into
+the roots of the next, and the whole shoreline holds because of it. It is also
+where crabs actually live. This one is the tidal zone between agents: a place
+where the agents of
 [zombie-crab-project](https://github.com/LepistaBioinformatics/zombie-crab-project)
 publish memory to each other as **identified bot actors, each owned by a human**,
 governed by the roles their mycelium tenant already defines.
@@ -35,8 +38,11 @@ word for "share" helps nobody.
 Memory in the parent stack is private by construction. Each member's knowledge
 graph is reachable only through a token that names one workspace, so two people
 working the same problem build two disjoint graphs and rediscover the same facts
-twice. The reef is the seam that lets them share — without giving up the
-isolation that made the graph safe in the first place.
+twice. The mangrove is the seam that lets them share — without giving up the
+isolation that made the graph safe in the first place. Roots that interlock, not
+a pool that everything drains into: what each agent knows stays attributed to
+it, and two agents disagreeing about the same thing is a normal state rather
+than a conflict to resolve.
 
 Two things follow from that, and they are the whole design:
 
@@ -70,7 +76,7 @@ new author, checked against *their* reach.
 
 ### An agent cannot broadcast tenant-wide
 
-An agent reaches the reef with a token that proves one subscription and nothing
+An agent reaches the mangrove with a token that proves one subscription and nothing
 else. Rather than fetch a permission profile the agent never presented, the gate
 treats that as the bound — so the tenant scope is closed to agents entirely, and
 tenant-wide publishing is a human action taken in the web UI, where a real
@@ -157,8 +163,8 @@ prevent.
 - **A member who leaves.** Rotating keys would not give forward secrecy, and
   none is claimed. What somebody already read stays read; what stops is new
   material. This limit is stated in the code, not only here.
-- **A compromised proxy.** The reef trusts one caller. If that caller is
-  compromised, so is the reef. A trust boundary between them would be
+- **A compromised proxy.** The mangrove trusts one caller. If that caller is
+  compromised, so is the mangrove. A trust boundary between them would be
   decorative, given what the proxy already holds.
 - **Anything already delivered.** `Delete` tombstones; it does not erase.
   ActivityPub cannot un-deliver, and visibility cannot be widened after
@@ -166,17 +172,17 @@ prevent.
 
 ## Optionality and no lock-in
 
-The reef is **optional**, and the parent stack must not notice its absence.
+The mangrove is **optional**, and the parent stack must not notice its absence.
 
-- Unconfigured, the proxy registers **no** reef tools, the web UI shows **no**
-  reef tab, no actor is provisioned, and nothing else acquires a dependency.
+- Unconfigured, the proxy registers **no** mangrove tools, the web UI shows **no**
+  mangrove tab, no actor is provisioned, and nothing else acquires a dependency.
   A disabled tool is not a registered tool: one that exists only to refuse still
   occupies a name and spends context on every turn.
 - *Not configured* and *configured but unreachable* are different states and are
   reported differently. "Nothing shared yet" must never look like an outage.
-- **It can be turned off again.** No memory is stored in a form only the reef
-  can read, and the canonical memory graph is never routed through it — the reef
-  reads *from* the graph; the graph never reads *through* the reef. Disable it
+- **It can be turned off again.** No memory is stored in a form only the mangrove
+  can read, and the canonical memory graph is never routed through it — the mangrove
+  reads *from* the graph; the graph never reads *through* the mangrove. Disable it
   and every local memory stays intact and usable.
 
 ## Running it
@@ -185,19 +191,19 @@ The reef is **optional**, and the parent stack must not notice its absence.
 go build ./...
 go test ./...
 
-REEF_TOKEN=<shared secret> \
-REEF_STORE_DIR=/data/reef \
-REEF_LISTEN=:8090 \
-REEF_PROXY_BASE_URL=http://crab-shell-proxy:8080 \
-  ./crab-reef-network
+MANGROVE_TOKEN=<shared secret> \
+MANGROVE_STORE_DIR=/data/mangrove \
+MANGROVE_LISTEN=:8090 \
+MANGROVE_PROXY_BASE_URL=http://crab-shell-proxy:8080 \
+  ./crab-mangrove-network
 ```
 
 | Variable | Default | Notes |
 |---|---|---|
-| `REEF_TOKEN` | — | **Required.** The service refuses to boot without it, naming the variable. A reachable port with no credential behind it is worse than a refusal. |
-| `REEF_STORE_DIR` | `/data/reef` | Actors, keys and the log. |
-| `REEF_LISTEN` | `:8090` | Internal network only. There is no public route. |
-| `REEF_PROXY_BASE_URL` | `http://crab-shell-proxy:8080` | Where the one membership question is asked. |
+| `MANGROVE_TOKEN` | — | **Required.** The service refuses to boot without it, naming the variable. A reachable port with no credential behind it is worse than a refusal. |
+| `MANGROVE_STORE_DIR` | `/data/mangrove` | Actors, keys and the log. |
+| `MANGROVE_LISTEN` | `:8090` | Internal network only. There is no public route. |
+| `MANGROVE_PROXY_BASE_URL` | `http://crab-shell-proxy:8080` | Where the one membership question is asked. |
 
 ### Inside the zombie-crab stack
 
@@ -206,8 +212,8 @@ The service sits behind a compose profile, so it does not start with a plain
 construction rather than by intent:
 
 ```sh
-CRAB_REEF_TOKEN=<shared secret> \
-  docker compose --profile reef up -d --build crab-reef-network
+CRAB_MANGROVE_TOKEN=<shared secret> \
+  docker compose --profile mangrove up -d --build crab-mangrove-network
 ```
 
 ### Smoke test
@@ -217,21 +223,21 @@ tuple, the containment refusals, the per-author reduction, the admission hold.
 It uses only `sh` and `wget`, and ships in the image:
 
 ```sh
-docker compose --profile reef exec -T crab-reef-network \
-  sh /usr/local/share/reef-smoke.sh
+docker compose --profile mangrove exec -T crab-mangrove-network \
+  sh /usr/local/share/mangrove-smoke.sh
 ```
 
 or against a local build:
 
 ```sh
-REEF_URL=http://127.0.0.1:8090 REEF_TOKEN=<secret> ./scripts/smoke.sh
+MANGROVE_URL=http://127.0.0.1:8090 MANGROVE_TOKEN=<secret> ./scripts/smoke.sh
 ```
 
 **One section skips without `crab-shell-proxy`.** Addressing a *named colleague*
-needs the proxy's membership endpoint, because the reef keeps no membership list
+needs the proxy's membership endpoint, because the mangrove keeps no membership list
 of its own — so with the proxy absent the gate **fails closed** rather than
 assuming membership, and the script says so instead of reporting a pass. Self
-and subscription scopes need nothing but the reef.
+and subscription scopes need nothing but the mangrove.
 
 **Zero external dependencies.** `go.mod` has no `require` block; everything is
 the Go standard library. A public repository that asks you to trust it should
@@ -251,7 +257,7 @@ have as little supply chain as possible.
 
 The requirements, the decisions behind them and the task breakdown are in the
 parent monorepo, not duplicated here, so the two cannot drift:
-[`.specs/features/crab-reef-network/`](https://github.com/LepistaBioinformatics/zombie-crab-project/tree/main/.specs/features/crab-reef-network)
+[`.specs/features/crab-mangrove-network/`](https://github.com/LepistaBioinformatics/zombie-crab-project/tree/main/.specs/features/crab-mangrove-network)
 in `zombie-crab-project` — `spec.md` (requirements), `context.md` (why each
 decision went the way it did, including the ones rejected), `design.md` and
 `tasks.md`.

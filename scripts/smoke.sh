@@ -1,23 +1,23 @@
 #!/bin/sh
-# A smoke test against a running reef, exercising the paths that carry the
+# A smoke test against a running mangrove, exercising the paths that carry the
 # design: publish, the containment refusal, the per-recipient hold, and the
 # last-writer-wins reduction.
 #
 # It uses only wget and sh, so it runs INSIDE the container as well as outside:
 #
-#   docker compose --profile reef exec -T crab-reef-network \
-#     sh /usr/local/share/reef-smoke.sh
+#   docker compose --profile mangrove exec -T crab-mangrove-network \
+#     sh /usr/local/share/mangrove-smoke.sh
 #
 # or, against a locally built binary:
 #
-#   REEF_URL=http://127.0.0.1:8090 REEF_TOKEN=dev-secret ./scripts/smoke.sh
+#   MANGROVE_URL=http://127.0.0.1:8090 MANGROVE_TOKEN=dev-secret ./scripts/smoke.sh
 #
 # It writes to whatever store the service is using. Point it at a throwaway
-# REEF_STORE_DIR, not at anything you care about.
+# MANGROVE_STORE_DIR, not at anything you care about.
 set -eu
 
-URL="${REEF_URL:-http://127.0.0.1:8090}"
-TOKEN="${REEF_TOKEN:?set REEF_TOKEN to the service's shared secret}"
+URL="${MANGROVE_URL:-http://127.0.0.1:8090}"
+TOKEN="${MANGROVE_TOKEN:?set MANGROVE_TOKEN to the service's shared secret}"
 
 fail=0
 
@@ -52,7 +52,7 @@ check() { # check <label> <haystack> <needle>
 ALICE='{"tenantId":"t1","subsAccId":"s1","role":"alpha","userAccId":"alice"}'
 BOB='{"tenantId":"t1","subsAccId":"s1","role":"alpha","userAccId":"bob"}'
 
-echo "reef smoke test against ${URL}"
+echo "mangrove smoke test against ${URL}"
 
 echo
 echo "health"
@@ -61,23 +61,23 @@ check "answers ok" "$(wget -qO- "${URL}/healthz" 2>/dev/null || true)" "ok"
 echo
 echo "identity comes from the tuple, never the body"
 out=$(post /internal/v1/publish \
-  "{\"tuple\":${ALICE},\"actor\":\"reef:actor:mallory:service\",\"object\":{\"type\":\"MemoryNote\",\"cell\":\"soil-ph\",\"content\":\"5.8\"}}")
-check "a forged actor in the body is ignored" "$out" 'reef:actor:alice:service'
+  "{\"tuple\":${ALICE},\"actor\":\"mangrove:actor:mallory:service\",\"object\":{\"type\":\"MemoryNote\",\"cell\":\"soil-ph\",\"content\":\"5.8\"}}")
+check "a forged actor in the body is ignored" "$out" 'mangrove:actor:alice:service'
 
 echo
 echo "containment"
 out=$(post_expect_refusal /internal/v1/publish \
-  "{\"tuple\":${ALICE},\"to\":[\"reef:group:tenant:t1\"],\"object\":{\"type\":\"MemoryNote\",\"cell\":\"x\",\"content\":\"y\"}}")
+  "{\"tuple\":${ALICE},\"to\":[\"mangrove:group:tenant:t1\"],\"object\":{\"type\":\"MemoryNote\",\"cell\":\"x\",\"content\":\"y\"}}")
 check "an agent cannot address the tenant" "$out" "403"
 
 out=$(post_expect_refusal /internal/v1/publish \
-  "{\"tuple\":${ALICE},\"to\":[\"reef:group:subscription:s2\"],\"object\":{\"type\":\"MemoryNote\",\"cell\":\"x\",\"content\":\"y\"}}")
+  "{\"tuple\":${ALICE},\"to\":[\"mangrove:group:subscription:s2\"],\"object\":{\"type\":\"MemoryNote\",\"cell\":\"x\",\"content\":\"y\"}}")
 check "a foreign subscription is refused" "$out" "403"
 
 echo
 echo "own subscription publishes, and waits on a governing role"
 out=$(post /internal/v1/publish \
-  "{\"tuple\":${ALICE},\"to\":[\"reef:group:subscription:s1\"],\"object\":{\"type\":\"MemoryNote\",\"cell\":\"soil-n\",\"content\":\"12 ppm\"}}")
+  "{\"tuple\":${ALICE},\"to\":[\"mangrove:group:subscription:s1\"],\"object\":{\"type\":\"MemoryNote\",\"cell\":\"soil-n\",\"content\":\"12 ppm\"}}")
 check "published" "$out" '"type":"Create"'
 check "marked pending" "$out" '"pending":true'
 
@@ -93,12 +93,12 @@ check "bob holds his, unmerged" "$out" '"content":"6.4"'
 echo
 echo "a direct share is held until the recipient admits it"
 out=$(post /internal/v1/publish \
-  "{\"tuple\":${BOB},\"to\":[\"reef:actor:alice:service\"],\"object\":{\"type\":\"MemoryNote\",\"cell\":\"held-note\",\"content\":\"for alice\"}}")
+  "{\"tuple\":${BOB},\"to\":[\"mangrove:actor:alice:service\"],\"object\":{\"type\":\"MemoryNote\",\"cell\":\"held-note\",\"content\":\"for alice\"}}")
 
 # ADDRESSING A NAMED COLLEAGUE NEEDS THE PROXY, and self/subscription scopes do
 # not. The reachability gate has to answer "does this person have a workspace
 # under a subscription the caller shares", and the only source for that is
-# crab-shell-proxy's membership endpoint -- the reef keeps no membership list of
+# crab-shell-proxy's membership endpoint -- the mangrove keeps no membership list of
 # its own, deliberately, so it cannot answer alone.
 #
 # Unreachable, it FAILS CLOSED rather than assuming membership. That is the
@@ -109,12 +109,12 @@ out=$(post /internal/v1/publish \
 # the membership lookup. Checked alongside the message itself, so the branch
 # still reads correctly if the body ever does come through.
 if [ -z "$out" ] || printf '%s' "$out" | grep -q 'resolve subscription members'; then
-  echo "  skip  needs crab-shell-proxy's /v1/reef/subscription-members"
-  echo "        (not built yet -- the facade is a later slice). Self and"
+  echo "  skip  needs crab-shell-proxy's /v1/mangrove/subscription-members"
+  echo "        (it exists, but is not running here). Self and"
   echo "        subscription scopes above do not need it. The gate failed"
   echo "        CLOSED rather than assuming membership, which is correct."
 else
-  sent=$(printf '%s' "$out" | sed -n 's/.*"id":"\(reef:act:[^"]*\)".*/\1/p' | head -1)
+  sent=$(printf '%s' "$out" | sed -n 's/.*"id":"\(mangrove:act:[^"]*\)".*/\1/p' | head -1)
   out=$(post /internal/v1/timeline "{\"tuple\":${ALICE},\"reading\":\"received\"}")
   check "it is held, not ingested" "$out" '"held"'
 
