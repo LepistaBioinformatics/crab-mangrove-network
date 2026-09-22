@@ -547,22 +547,14 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	me := actor.PersonID(req.Tuple.UserAccID)
-	mine := actor.ServiceID(req.Tuple.UserAccID)
-	admitted := admissions(acts)
-	governed := governanceDecisions(acts)
-
-	// Admitted BY THIS MEMBER, not by anybody. One recipient accepting must not
-	// clear another recipient's hold.
-	admittedByMe := func(activityID string) bool {
-		return admitted[activityID][me] || admitted[activityID][mine]
-	}
+	v := newViewer(req.Tuple, acts)
+	governed := v.governed
 
 	switch strings.ToLower(req.Reading) {
 	case "published":
 		var own []activity.Activity
 		for _, a := range acts {
-			if a.Actor == me || a.Actor == mine {
+			if v.reach(a) == reachOwn {
 				own = append(own, a)
 			}
 		}
@@ -590,28 +582,18 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		var visible []activity.Activity
 		var held []heldItem
 		for _, a := range acts {
-			if a.Actor == me || a.Actor == mine || a.Object == nil {
+			if a.Object == nil {
 				continue
 			}
-			direct := false
-			viaGroup := false
-			for _, addr := range a.Audience() {
-				if addr == me || addr == mine {
-					direct = true
-				}
-				if strings.HasPrefix(addr, "mangrove:group:") {
-					viaGroup = true
-				}
-			}
-			switch {
-			case direct && !admittedByMe(a.ID):
+			switch v.reach(a) {
+			case reachHeld:
 				// FR-B7: visible to the human, NOT yet in the agent's memory.
 				// The hold is cleared only by THIS member admitting it.
 				held = append(held, heldItem{
 					ActivityID: a.ID, From: a.Actor,
 					Object: *a.Object, Published: a.Published,
 				})
-			case direct, viaGroup && governed[a.ID]:
+			case reachVisible:
 				visible = append(visible, a)
 			}
 		}
