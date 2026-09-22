@@ -1,10 +1,10 @@
-package reeflog
+package mangrovelog
 
 import (
 	"testing"
 
-	"github.com/LepistaBioinformatics/crab-reef-network/internal/activity"
-	"github.com/LepistaBioinformatics/crab-reef-network/internal/actor"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/activity"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/actor"
 )
 
 func newStore(t *testing.T) (*actor.Store, *Log) {
@@ -125,7 +125,7 @@ func TestAppendRefusesAForgedSignature(t *testing.T) {
 	obj := *a.Object
 	obj.Content = "9.9"
 	tampered.Object = &obj
-	tampered.ID = "reef:act:tampered"
+	tampered.ID = "mangrove:act:tampered"
 
 	if err := lg.Append("t1", "s1", tampered, as); err == nil {
 		t.Fatal("appended a tampered activity; verification must be a precondition of the write")
@@ -142,12 +142,12 @@ func TestAppendRefusesAnUnsignedActivity(t *testing.T) {
 	}
 }
 
-func TestAppendRefusesANonReefActor(t *testing.T) {
+func TestAppendRefusesANonMangroveActor(t *testing.T) {
 	as, lg := newStore(t)
 	a := note("1", "soil-ph", "x", "2026-09-21T10:00:00Z")
 	a.Actor = "https://mastodon.example/users/mallory"
 	if err := lg.Append("t1", "s1", a, as); err == nil {
-		t.Fatal("appended an activity from an identity this reef did not mint")
+		t.Fatal("appended an activity from an identity this mangrove did not mint")
 	}
 }
 

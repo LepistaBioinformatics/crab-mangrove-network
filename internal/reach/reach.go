@@ -7,7 +7,7 @@
 // thing to forget when a fifth addressing dimension is added, so there is one
 // function and a test that asserts each verb routes through it.
 //
-// WHY THE AGENT PATH IS SO NARROW. An agent reaches the reef through
+// WHY THE AGENT PATH IS SO NARROW. An agent reaches the mangrove through
 // crab-shell-proxy, authenticated by the stateless MCP token, which signs
 // tenantID/subsAccID/role/userAccID and carries NO mycelium LicensedResources.
 // So the caller's own subscription is provable and nothing else is. Rather than
@@ -36,12 +36,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/LepistaBioinformatics/crab-reef-network/internal/actor"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/actor"
 )
 
 // Members supplies the one membership fact the gate needs. In production it is
 // backed by crab-shell-proxy's ListSubscriptionUsers, which globs the workspace
-// tree -- the reef holds no membership list of its own, so it cannot disagree
+// tree -- the mangrove holds no membership list of its own, so it cannot disagree
 // with mycelium.
 type Members interface {
 	SubscriptionMembers(tenantID, subsAccID string) ([]string, error)
@@ -107,7 +107,7 @@ func Check(t actor.Tuple, m Members, audience []string, opt Options) error {
 				Reason:    "tenant scope needs a licensed human; an agent token proves one subscription, not the tenant",
 			}
 
-		case strings.HasPrefix(addr, "reef:group:"):
+		case strings.HasPrefix(addr, "mangrove:group:"):
 			return &Refusal{Addressee: addr, Reason: "not a scope this caller is licensed on"}
 
 		case actor.AccIDOf(addr) != "":
@@ -130,7 +130,7 @@ func Check(t actor.Tuple, m Members, audience []string, opt Options) error {
 			}
 
 		default:
-			return &Refusal{Addressee: addr, Reason: "not an addressable reef identity"}
+			return &Refusal{Addressee: addr, Reason: "not an addressable mangrove identity"}
 		}
 	}
 	return nil

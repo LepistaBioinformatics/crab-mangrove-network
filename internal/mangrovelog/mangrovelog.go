@@ -1,4 +1,4 @@
-// Package reeflog is the memory: an append-only log of signed activities, and
+// Package mangrovelog is the memory: an append-only log of signed activities, and
 // the reduction that turns it back into readable state.
 //
 // MEMORY IS A LOG, NOT A DOCUMENT. Update and Delete append; they never
@@ -22,7 +22,7 @@
 // The file format is JSONL, one activity per line, matching what
 // crab-shell-proxy's memory graph already writes. Append-only is the natural
 // shape of an append-only file.
-package reeflog
+package mangrovelog
 
 import (
 	"bufio"
@@ -36,8 +36,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LepistaBioinformatics/crab-reef-network/internal/activity"
-	"github.com/LepistaBioinformatics/crab-reef-network/internal/actor"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/activity"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/actor"
 )
 
 // Keys resolves the verification key for an author. actor.Store satisfies it.
@@ -51,7 +51,7 @@ type Log struct{ root string }
 
 func New(root string) (*Log, error) {
 	if err := os.MkdirAll(filepath.Join(root, "log"), 0o700); err != nil {
-		return nil, fmt.Errorf("reeflog: %w", err)
+		return nil, fmt.Errorf("mangrovelog: %w", err)
 	}
 	return &Log{root: root}, nil
 }
@@ -74,14 +74,14 @@ func sanitize(s string) string {
 // read back out of the log was signed by the actor it names.
 func (l *Log) Append(tenantID, subsAccID string, a activity.Activity, k Keys) error {
 	if !a.Type.Known() {
-		return fmt.Errorf("reeflog: unknown activity type %q", a.Type)
+		return fmt.Errorf("mangrovelog: unknown activity type %q", a.Type)
 	}
 	if actor.AccIDOf(a.Actor) == "" {
-		return fmt.Errorf("reeflog: %q is not a reef actor id", a.Actor)
+		return fmt.Errorf("mangrovelog: %q is not a mangrove actor id", a.Actor)
 	}
 	pub, err := k.PublicKey(a.Actor)
 	if err != nil {
-		return fmt.Errorf("reeflog: resolve key for %s: %w", a.Actor, err)
+		return fmt.Errorf("mangrovelog: resolve key for %s: %w", a.Actor, err)
 	}
 	if err := activity.Verify(a, pub); err != nil {
 		return err
@@ -89,7 +89,7 @@ func (l *Log) Append(tenantID, subsAccID string, a activity.Activity, k Keys) er
 
 	p := l.shard(tenantID, subsAccID)
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		return fmt.Errorf("reeflog: %w", err)
+		return fmt.Errorf("mangrovelog: %w", err)
 	}
 	b, err := json.Marshal(a)
 	if err != nil {
@@ -97,11 +97,11 @@ func (l *Log) Append(tenantID, subsAccID string, a activity.Activity, k Keys) er
 	}
 	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		return fmt.Errorf("reeflog: open shard: %w", err)
+		return fmt.Errorf("mangrovelog: open shard: %w", err)
 	}
 	defer f.Close()
 	if _, err := f.Write(append(b, '\n')); err != nil {
-		return fmt.Errorf("reeflog: append: %w", err)
+		return fmt.Errorf("mangrovelog: append: %w", err)
 	}
 	return nil
 }
@@ -115,7 +115,7 @@ func (l *Log) Read(tenantID, subsAccID string) ([]activity.Activity, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("reeflog: open shard: %w", err)
+		return nil, fmt.Errorf("mangrovelog: open shard: %w", err)
 	}
 	defer f.Close()
 
@@ -129,12 +129,12 @@ func (l *Log) Read(tenantID, subsAccID string) ([]activity.Activity, error) {
 		}
 		var a activity.Activity
 		if err := json.Unmarshal([]byte(line), &a); err != nil {
-			return nil, fmt.Errorf("reeflog: decode line: %w", err)
+			return nil, fmt.Errorf("mangrovelog: decode line: %w", err)
 		}
 		out = append(out, a)
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("reeflog: scan: %w", err)
+		return nil, fmt.Errorf("mangrovelog: scan: %w", err)
 	}
 	return out, nil
 }

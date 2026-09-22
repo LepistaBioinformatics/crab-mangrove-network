@@ -83,7 +83,7 @@ func TestPrivateKeyIsNotWorldReadableAndNotInTheDocument(t *testing.T) {
 		t.Fatalf("ensure: %v", err)
 	}
 
-	fi, err := os.Stat(filepath.Join(dir, "keys", "reef-actor-acc-alice-service.ed25519"))
+	fi, err := os.Stat(filepath.Join(dir, "keys", "mangrove-actor-acc-alice-service.ed25519"))
 	if err != nil {
 		// The filename is sanitized; find it rather than guess.
 		entries, _ := os.ReadDir(filepath.Join(dir, "keys"))

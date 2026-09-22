@@ -1,4 +1,4 @@
-// Package actor holds the two identities every workspace gets on the reef: a
+// Package actor holds the two identities every workspace gets on the mangrove: a
 // Person for the human, and a Service for the agent that works for them.
 //
 // THE AGENT IS NOT A PEER OF THE HUMAN. A Service actor carries attributedTo
@@ -41,7 +41,7 @@ const (
 )
 
 // Tuple is the verified workspace identity crab-shell-proxy resolves before it
-// ever calls the reef. It is the ONLY source of identity in this service: no
+// ever calls the mangrove. It is the ONLY source of identity in this service: no
 // handler accepts an actor id from a request body.
 //
 // It mirrors docker.WorkspaceKey in the proxy. Role is the agent key.
@@ -75,23 +75,23 @@ type Actor struct {
 // PersonID and ServiceID are the two derivations. Both take the account id and
 // nothing else, so they are stable across a rename, an email change, or a move
 // between agents.
-func PersonID(accID string) string  { return "reef:actor:" + sanitizeID(accID) + ":person" }
-func ServiceID(accID string) string { return "reef:actor:" + sanitizeID(accID) + ":service" }
+func PersonID(accID string) string  { return "mangrove:actor:" + sanitizeID(accID) + ":person" }
+func ServiceID(accID string) string { return "mangrove:actor:" + sanitizeID(accID) + ":service" }
 
 // SubscriptionGroupID and TenantGroupID name the two Group actors a scope is
 // addressed through.
 func SubscriptionGroupID(subsAccID string) string {
-	return "reef:group:subscription:" + sanitizeID(subsAccID)
+	return "mangrove:group:subscription:" + sanitizeID(subsAccID)
 }
 func TenantGroupID(tenantID string) string {
-	return "reef:group:tenant:" + sanitizeID(tenantID)
+	return "mangrove:group:tenant:" + sanitizeID(tenantID)
 }
 
 // AccIDOf recovers the account id from an actor id, or "" if the id is not one
 // of ours. Used by the reachability gate to decide whether an addressee is a
 // member of a subscription the caller can already see.
 func AccIDOf(actorID string) string {
-	rest, ok := strings.CutPrefix(actorID, "reef:actor:")
+	rest, ok := strings.CutPrefix(actorID, "mangrove:actor:")
 	if !ok {
 		return ""
 	}

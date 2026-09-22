@@ -17,12 +17,12 @@ func key(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 
 func sample() Activity {
 	return Activity{
-		ID:        "reef:act:1",
+		ID:        "mangrove:act:1",
 		Type:      Create,
-		Actor:     "reef:actor:alice:service",
-		To:        []string{"reef:group:subscription:s1"},
+		Actor:     "mangrove:actor:alice:service",
+		To:        []string{"mangrove:group:subscription:s1"},
 		CC:        []string{},
-		Object:    &Object{ID: "reef:obj:1", Type: MemoryNote, Cell: "soil-ph", Content: "5.8"},
+		Object:    &Object{ID: "mangrove:obj:1", Type: MemoryNote, Cell: "soil-ph", Content: "5.8"},
 		Published: "2026-09-21T10:00:00Z",
 	}
 }
@@ -43,7 +43,7 @@ func TestSignRoundTrip(t *testing.T) {
 // The classic break in a group scheme is a signature that covers the payload
 // but not the recipient list: a member re-addresses a validly signed activity,
 // forwards it, and the receiver verifies it successfully. If this test ever
-// passes with `to` removed from the signed bytes, the reef has that hole.
+// passes with `to` removed from the signed bytes, the mangrove has that hole.
 func TestSignatureCoversAddressing(t *testing.T) {
 	pub, priv := key(t)
 
@@ -51,14 +51,14 @@ func TestSignatureCoversAddressing(t *testing.T) {
 		name   string
 		mutate func(*Activity)
 	}{
-		{"to is swapped", func(a *Activity) { a.To = []string{"reef:group:tenant:t1"} }},
-		{"to gains an entry", func(a *Activity) { a.To = append(a.To, "reef:actor:mallory:service") }},
-		{"cc gains an entry", func(a *Activity) { a.CC = append(a.CC, "reef:actor:mallory:service") }},
+		{"to is swapped", func(a *Activity) { a.To = []string{"mangrove:group:tenant:t1"} }},
+		{"to gains an entry", func(a *Activity) { a.To = append(a.To, "mangrove:actor:mallory:service") }},
+		{"cc gains an entry", func(a *Activity) { a.CC = append(a.CC, "mangrove:actor:mallory:service") }},
 		{"to is emptied", func(a *Activity) { a.To = []string{} }},
-		{"actor is swapped", func(a *Activity) { a.Actor = "reef:actor:mallory:service" }},
+		{"actor is swapped", func(a *Activity) { a.Actor = "mangrove:actor:mallory:service" }},
 		{"content is edited", func(a *Activity) { a.Object.Content = "9.9" }},
 		{"cell is moved", func(a *Activity) { a.Object.Cell = "soil-nitrogen" }},
-		{"target is set", func(a *Activity) { a.Target = "reef:group:tenant:t1" }},
+		{"target is set", func(a *Activity) { a.Target = "mangrove:group:tenant:t1" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := sample()

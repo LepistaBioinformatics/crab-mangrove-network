@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LepistaBioinformatics/crab-reef-network/internal/activity"
-	"github.com/LepistaBioinformatics/crab-reef-network/internal/actor"
-	"github.com/LepistaBioinformatics/crab-reef-network/internal/reeflog"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/activity"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/actor"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/mangrovelog"
 )
 
 const token = "shared-secret"
@@ -34,7 +34,7 @@ func newServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("actor store: %v", err)
 	}
-	lg, err := reeflog.New(dir)
+	lg, err := mangrovelog.New(dir)
 	if err != nil {
 		t.Fatalf("log: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestAgentCannotAddressTheTenant(t *testing.T) {
 func TestShareRefusesAnOutOfReachTarget(t *testing.T) {
 	s := newServer(t)
 	rec, _ := call(t, s, "/internal/v1/share", map[string]any{
-		"tuple": tup("alice"), "objectId": "reef:obj:1",
+		"tuple": tup("alice"), "objectId": "mangrove:obj:1",
 		"target": actor.SubscriptionGroupID("s2"),
 	}, true)
 	if rec.Code != http.StatusForbidden {
@@ -282,7 +282,7 @@ func TestOnlyTheHumanMayRevoke(t *testing.T) {
 	s := newServer(t)
 	rec, _ := call(t, s, "/internal/v1/revoke", map[string]any{
 		"tuple": tup("alice"), "as": "service",
-		"objectId": "reef:obj:1", "cell": "soil-ph",
+		"objectId": "mangrove:obj:1", "cell": "soil-ph",
 	}, true)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("an agent revoked on its own authority: %d", rec.Code)
@@ -290,7 +290,7 @@ func TestOnlyTheHumanMayRevoke(t *testing.T) {
 
 	rec, _ = call(t, s, "/internal/v1/revoke", map[string]any{
 		"tuple": tup("alice"), "as": "person",
-		"objectId": "reef:obj:1", "cell": "soil-ph",
+		"objectId": "mangrove:obj:1", "cell": "soil-ph",
 	}, true)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("the human could not revoke: %d", rec.Code)
@@ -366,7 +366,7 @@ func TestReactEmitsTheStandardVerbs(t *testing.T) {
 		"read": activity.Read, "like": activity.Like, "flag": activity.Flag,
 	} {
 		_, out := call(t, s, "/internal/v1/react", map[string]any{
-			"tuple": tup("alice"), "kind": kind, "ref": "reef:obj:1",
+			"tuple": tup("alice"), "kind": kind, "ref": "mangrove:obj:1",
 		}, true)
 		got := out["activity"].(map[string]any)["type"].(string)
 		if got != string(want) {
@@ -374,7 +374,7 @@ func TestReactEmitsTheStandardVerbs(t *testing.T) {
 		}
 	}
 	rec, _ := call(t, s, "/internal/v1/react", map[string]any{
-		"tuple": tup("alice"), "kind": "yeet", "ref": "reef:obj:1",
+		"tuple": tup("alice"), "kind": "yeet", "ref": "mangrove:obj:1",
 	}, true)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("an unknown reaction kind answered %d", rec.Code)

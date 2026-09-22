@@ -1,7 +1,7 @@
-// Package httpapi is the reef's only surface, and it has exactly one caller.
+// Package httpapi is the mangrove's only surface, and it has exactly one caller.
 //
-// crab-shell-proxy authenticates every agent and every human before the reef
-// hears about them, so the reef does not verify JWTs, does not decode mycelium
+// crab-shell-proxy authenticates every agent and every human before the mangrove
+// hears about them, so the mangrove does not verify JWTs, does not decode mycelium
 // profiles, and has no public route. It trusts one caller, proven by a shared
 // secret, and that caller hands it an ALREADY-VERIFIED workspace tuple.
 //
@@ -21,7 +21,7 @@
 //	                  with a profile, never from an agent's MCP token, which
 //	                  cannot prove it. See internal/reach.
 //
-// If the proxy is compromised, so is the reef. That is stated rather than
+// If the proxy is compromised, so is the mangrove. That is stated rather than
 // defended against: the proxy already runs as root with a Docker socket and
 // reads every workspace, so a trust boundary between them would be decorative.
 package httpapi
@@ -37,15 +37,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LepistaBioinformatics/crab-reef-network/internal/activity"
-	"github.com/LepistaBioinformatics/crab-reef-network/internal/actor"
-	"github.com/LepistaBioinformatics/crab-reef-network/internal/reach"
-	"github.com/LepistaBioinformatics/crab-reef-network/internal/reeflog"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/activity"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/actor"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/mangrovelog"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/reach"
 )
 
 type Server struct {
 	Actors  *actor.Store
-	Log     *reeflog.Log
+	Log     *mangrovelog.Log
 	Members reach.Members
 	Token   string
 	Now     func() time.Time
@@ -96,7 +96,7 @@ func (s *Server) Routes() *http.ServeMux {
 	return mux
 }
 
-// auth is a constant-time bearer check. The reef refuses to boot without a
+// auth is a constant-time bearer check. The mangrove refuses to boot without a
 // token (see cmd), so this can never degrade into an open endpoint.
 func (s *Server) auth(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -148,7 +148,7 @@ func newID(prefix string) string {
 func (s *Server) emit(t actor.Tuple, author *actor.Actor, a *activity.Activity) error {
 	a.Actor = author.ID
 	if a.ID == "" {
-		a.ID = newID("reef:act:")
+		a.ID = newID("mangrove:act:")
 	}
 	if a.Published == "" {
 		a.Published = s.now().Format(activity.TimeFormat)
@@ -205,7 +205,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Object.ID == "" {
-		req.Object.ID = newID("reef:obj:")
+		req.Object.ID = newID("mangrove:obj:")
 	}
 
 	a := activity.Activity{Type: activity.Create, Object: &req.Object, To: req.To}
@@ -225,7 +225,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 // (FR-B7, handleAdmit).
 func needsDecision(a activity.Activity) bool {
 	for _, addr := range a.Audience() {
-		if strings.HasPrefix(addr, "reef:group:") {
+		if strings.HasPrefix(addr, "mangrove:group:") {
 			return true
 		}
 	}
@@ -381,7 +381,7 @@ type decideReq struct {
 	// Governs is set by the proxy when the caller's mycelium profile carries a
 	// role governing the scope in question -- subscriptions-manager for a
 	// subscription Group, tenant-manager or tenant-owner for a tenant Group.
-	// The reef does not resolve roles; it is not the component that can.
+	// The mangrove does not resolve roles; it is not the component that can.
 	Governs bool `json:"governs"`
 }
 
@@ -499,10 +499,10 @@ type timelineReq struct {
 }
 
 type timelineResp struct {
-	Reading string            `json:"reading"`
-	Claims  []reeflog.Claim   `json:"claims,omitempty"`
-	Held    []heldItem        `json:"held,omitempty"`
-	Pending []pendingDecision `json:"pending,omitempty"`
+	Reading string              `json:"reading"`
+	Claims  []mangrovelog.Claim `json:"claims,omitempty"`
+	Held    []heldItem          `json:"held,omitempty"`
+	Pending []pendingDecision   `json:"pending,omitempty"`
 }
 
 type heldItem struct {
@@ -555,7 +555,7 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 				own = append(own, a)
 			}
 		}
-		reduced := reeflog.Reduce(own)
+		reduced := mangrovelog.Reduce(own)
 		writeJSON(w, http.StatusOK, timelineResp{Reading: "published", Claims: flatten(reduced)})
 
 	case "pending":
@@ -588,7 +588,7 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 				if addr == me || addr == mine {
 					direct = true
 				}
-				if strings.HasPrefix(addr, "reef:group:") {
+				if strings.HasPrefix(addr, "mangrove:group:") {
 					viaGroup = true
 				}
 			}
@@ -606,7 +606,7 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, timelineResp{
 			Reading: "received",
-			Claims:  flatten(reeflog.Reduce(visible)),
+			Claims:  flatten(mangrovelog.Reduce(visible)),
 			Held:    held,
 		})
 	}
@@ -636,7 +636,7 @@ func admissions(acts []activity.Activity) map[string]map[string]bool {
 		if a.Type != activity.Accept || a.InReplyTo == "" {
 			continue
 		}
-		if strings.HasPrefix(a.Target, "reef:group:") {
+		if strings.HasPrefix(a.Target, "mangrove:group:") {
 			continue // a governance decision, not an admission
 		}
 		if out[a.InReplyTo] == nil {
@@ -653,7 +653,7 @@ func governanceDecisions(acts []activity.Activity) map[string]bool {
 		if a.Type != activity.Accept && a.Type != activity.Reject {
 			continue
 		}
-		if a.InReplyTo != "" && strings.HasPrefix(a.Target, "reef:group:") {
+		if a.InReplyTo != "" && strings.HasPrefix(a.Target, "mangrove:group:") {
 			out[a.InReplyTo] = true
 		}
 	}
@@ -663,15 +663,15 @@ func governanceDecisions(acts []activity.Activity) map[string]bool {
 // scopeOf returns the group an activity was addressed to, or "".
 func scopeOf(a activity.Activity) string {
 	for _, addr := range a.Audience() {
-		if strings.HasPrefix(addr, "reef:group:") {
+		if strings.HasPrefix(addr, "mangrove:group:") {
 			return addr
 		}
 	}
 	return ""
 }
 
-func flatten(m map[string][]reeflog.Claim) []reeflog.Claim {
-	var out []reeflog.Claim
+func flatten(m map[string][]mangrovelog.Claim) []mangrovelog.Claim {
+	var out []mangrovelog.Claim
 	for _, cs := range m {
 		out = append(out, cs...)
 	}
