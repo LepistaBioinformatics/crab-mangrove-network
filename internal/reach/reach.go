@@ -16,20 +16,22 @@
 //	own actors ............................ allowed, the tuple names them
 //	an actor with a workspace in the same
 //	  (tenant, subscription) .............. allowed, the proxy can enumerate them
-//	the subscription Group ................ allowed, the tuple names it
+//	the subscription Group ................ REFUSED on the agent path
 //	the tenant Group ...................... REFUSED on the agent path
 //	anything else ......................... refused, not provable
 //
-// A workspace under one subscription does not license the whole tenant, and the
-// token cannot prove otherwise. The consequence is stricter than the
-// specification demanded and better than it: AN AGENT CANNOT BROADCAST
-// TENANT-WIDE AT ALL. A turn steered by untrusted text reaching every member of
-// a tenant is the shape this stack refuses elsewhere for the same reason.
+// A workspace tuple names a subscription; it does not say the caller GOVERNS
+// that subscription, and it cannot license the whole tenant. The token proves
+// membership, and addressing a Group is not a membership question. So the
+// consequence is stricter than the specification demanded and better than it:
+// AN AGENT CANNOT BROADCAST TO A GROUP AT ALL. A turn steered by untrusted text
+// reaching every member of a scope is the shape this stack refuses elsewhere for
+// the same reason, and the reason does not weaken one level down.
 //
-// Tenant scope is therefore a human action, taken in the webapp, where the
+// Group scope is therefore a human action, taken in the webapp, where the
 // request carries a real mycelium profile through the gateway and the caller's
-// tier can be resolved properly. That path sets Options.TenantLicensed, and it
-// is the ONLY thing that may set it.
+// tier can be resolved properly. That path sets Options.GroupsLicensed and
+// Options.TenantLicensed, and it is the ONLY thing that may set either.
 package reach
 
 import (
@@ -53,6 +55,16 @@ type Options struct {
 	// TenantLicensed means the caller is licensed on Tuple.TenantID, as
 	// resolved from a real profile. Never set from an agent's MCP token.
 	TenantLicensed bool
+
+	// GroupsLicensed means the caller governs Tuple.SubsAccID -- a mycelium
+	// subscriptions-manager on it, or any tenant role above it -- and may
+	// therefore address a Group scope at all. Never set from an agent's MCP
+	// token, which signs a workspace tuple and no mycelium role.
+	//
+	// FALSE IS THE SAFE END, which is why this is a licence to widen rather
+	// than a flag to restrict: a call site that forgets it addresses nobody
+	// extra, and a new call site cannot acquire Group reach by omission.
+	GroupsLicensed bool
 }
 
 // Refusal names the addressee that failed and why. It is an error rather than a
@@ -96,7 +108,13 @@ func Check(t actor.Tuple, m Members, audience []string, opt Options) error {
 			continue
 
 		case addr == ownSubscription:
-			continue
+			if opt.GroupsLicensed {
+				continue
+			}
+			return &Refusal{
+				Addressee: addr,
+				Reason:    "addressing a group needs a licensed human; an agent token proves membership of a subscription, not governance of it",
+			}
 
 		case addr == ownTenant:
 			if opt.TenantLicensed {

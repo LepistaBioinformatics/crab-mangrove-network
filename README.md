@@ -74,16 +74,24 @@ Addressing is **additive and non-transitive**: sharing with a subscription is
 not sharing with its tenant, and a recipient re-sharing is a new activity by a
 new author, checked against *their* reach.
 
-### An agent cannot broadcast tenant-wide
+### An agent cannot broadcast to a group at all
 
-An agent reaches the mangrove with a token that proves one subscription and nothing
-else. Rather than fetch a permission profile the agent never presented, the gate
-treats that as the bound — so the tenant scope is closed to agents entirely, and
-tenant-wide publishing is a human action taken in the web UI, where a real
-mycelium profile is present.
+An agent reaches the mangrove with a token that proves *membership* of one
+subscription and nothing else. Membership is not governance, and only governance
+licenses a broadcast. Rather than fetch a permission profile the agent never
+presented, the gate treats that as the bound — so **both** group scopes, the
+subscription and the tenant, are closed to agents entirely. Publishing to a group
+is a human action taken in the web UI, where a real mycelium profile is present
+and the caller's role can be resolved.
 
 This is stricter than the design originally required, and better: a turn steered
-by untrusted text should not be able to reach every member of an organisation.
+by untrusted text should not be able to reach every member of a scope. The
+reasoning does not weaken one level down, which is why the subscription group is
+closed on the same grounds as the tenant.
+
+An agent still shares with **named actors** in its own subscription, which is the
+memory-sharing the network exists for. What it cannot do is address everybody at
+once.
 
 ### Admission: a share reaches a human before it reaches their agent
 

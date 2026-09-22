@@ -28,15 +28,48 @@ func members() *fakeMembers {
 	return &fakeMembers{byScope: map[string][]string{"t1/s1": {"alice", "bob"}}}
 }
 
-func TestSelfAndOwnSubscriptionAreReachable(t *testing.T) {
+func TestSelfAndSubscriptionPeersAreReachable(t *testing.T) {
 	for _, addr := range []string{
 		actor.PersonID("alice"),
 		actor.ServiceID("alice"),
-		actor.SubscriptionGroupID("s1"),
 		actor.ServiceID("bob"), // shares the subscription
 	} {
 		if err := Check(caller, members(), []string{addr}, Options{}); err != nil {
 			t.Errorf("%s should be reachable: %v", addr, err)
+		}
+	}
+}
+
+// TestOwnSubscriptionGroupNeedsGovernance is the levelling decision (AD-030).
+// Membership of a subscription is not governance of it, and only the second
+// licenses a broadcast. An MCP token proves the first and can never prove the
+// second, so this is also what stops an agent addressing a Group.
+func TestOwnSubscriptionGroupNeedsGovernance(t *testing.T) {
+	own := actor.SubscriptionGroupID("s1")
+
+	err := Check(caller, members(), []string{own}, Options{})
+	if err == nil {
+		t.Fatal("an agent-shaped call addressed its own subscription group")
+	}
+	var ref *Refusal
+	if !errors.As(err, &ref) || ref.Addressee != own {
+		t.Fatalf("refusal must name the group, got %v", err)
+	}
+
+	if err := Check(caller, members(), []string{own}, Options{GroupsLicensed: true}); err != nil {
+		t.Errorf("a governing human was refused its own subscription group: %v", err)
+	}
+}
+
+// A licence to address Groups is not a licence to address ANY group: it says
+// the caller governs its own subscription, and nothing about a foreign one.
+func TestGroupsLicensedDoesNotReachForeignScopes(t *testing.T) {
+	for _, addr := range []string{
+		actor.SubscriptionGroupID("s2"),
+		actor.TenantGroupID("t2"),
+	} {
+		if err := Check(caller, members(), []string{addr}, Options{GroupsLicensed: true}); err == nil {
+			t.Errorf("%s was reached with only GroupsLicensed", addr)
 		}
 	}
 }
@@ -95,10 +128,10 @@ func TestStrangerIsRefused(t *testing.T) {
 func TestOutOfReachAddresseeRefusesWholeActivity(t *testing.T) {
 	audience := []string{
 		actor.ServiceID("bob"),          // reachable
-		actor.SubscriptionGroupID("s1"), // reachable
+		actor.SubscriptionGroupID("s1"), // reachable, given the licence below
 		actor.ServiceID("mallory"),      // NOT reachable
 	}
-	err := Check(caller, members(), audience, Options{})
+	err := Check(caller, members(), audience, Options{GroupsLicensed: true})
 	if err == nil {
 		t.Fatal("a mixed audience was accepted; the whole activity must be refused")
 	}
@@ -135,7 +168,7 @@ func TestNonMangroveIdentityIsRefused(t *testing.T) {
 // audience that never needs it.
 func TestMemberLookupIsSkippedWhenUnneeded(t *testing.T) {
 	m := members()
-	if err := Check(caller, m, []string{actor.SubscriptionGroupID("s1")}, Options{}); err != nil {
+	if err := Check(caller, m, []string{actor.SubscriptionGroupID("s1")}, Options{GroupsLicensed: true}); err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
 	if m.calls != 0 {

@@ -65,6 +65,17 @@ type base struct {
 	Tuple          actor.Tuple `json:"tuple"`
 	As             string      `json:"as"`
 	TenantLicensed bool        `json:"tenantLicensed"`
+	GroupsLicensed bool        `json:"groupsLicensed"`
+}
+
+// licences reads the two widening licences off a request. They travel together
+// because they are answered by one identity: only crab-shell-proxy may set
+// either, and only from a mycelium profile the gateway injected.
+func (b base) licences() reach.Options {
+	return reach.Options{
+		TenantLicensed: b.TenantLicensed,
+		GroupsLicensed: b.GroupsLicensed,
+	}
 }
 
 // signer resolves which of the workspace's two actors is acting, provisioning
@@ -189,7 +200,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// THE GATE. Every widening verb passes here and nowhere else.
-	if err := reach.Check(req.Tuple, s.Members, req.To, reach.Options{TenantLicensed: req.TenantLicensed}); err != nil {
+	if err := reach.Check(req.Tuple, s.Members, req.To, req.licences()); err != nil {
 		if writeRefusal(w, err) {
 			return
 		}
@@ -258,7 +269,7 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 	}
 	// Remove narrows and needs no reach check; Add widens and does.
 	if !req.Undo {
-		if err := reach.Check(req.Tuple, s.Members, []string{req.Target}, reach.Options{TenantLicensed: req.TenantLicensed}); err != nil {
+		if err := reach.Check(req.Tuple, s.Members, []string{req.Target}, req.licences()); err != nil {
 			if writeRefusal(w, err) {
 				return
 			}
