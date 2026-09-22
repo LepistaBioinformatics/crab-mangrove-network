@@ -10,6 +10,7 @@ import (
 
 	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/activity"
 	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/actor"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/blob"
 	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/mangrovelog"
 )
 
@@ -38,9 +39,13 @@ func newServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("log: %v", err)
 	}
+	bs, err := blob.New(dir, 0)
+	if err != nil {
+		t.Fatalf("blob store: %v", err)
+	}
 	n := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
 	return &Server{
-		Actors: as, Log: lg, Members: fakeMembers{}, Token: token,
+		Actors: as, Log: lg, Blobs: bs, Members: fakeMembers{}, Token: token,
 		Now: func() time.Time { n = n.Add(time.Second); return n },
 	}
 }
@@ -416,6 +421,61 @@ func TestHealthzNeedsNoToken(t *testing.T) {
 	s.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("healthz answered %d", rec.Code)
+	}
+}
+
+// TestGroupPublicationReachesTheScopeOnceDecided is the arm nothing covered.
+//
+// Found by mutation while the visibility rule was being factored out: breaking
+// "reaches them through a group a governing role accepted" failed NOT ONE test,
+// although two tests publish to a group and one of them has a role holder
+// accept. They assert the DECISION; none asserted that the decision is what
+// makes the publication readable by the rest of the scope -- which is the whole
+// point of having one.
+func TestGroupPublicationReachesTheScopeOnceDecided(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+
+	_, out := call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple": tup("alice"), "as": "person", "groupsLicensed": true,
+		"to":     []string{actor.SubscriptionGroupID("s1")},
+		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "5.8"},
+	}, true)
+	actID := out["activity"].(map[string]any)["id"].(string)
+
+	received := func(who string) int {
+		t.Helper()
+		_, out := call(t, s, "/internal/v1/timeline", map[string]any{
+			"tuple": tup(who), "reading": "received",
+		}, true)
+		claims, _ := out["claims"].([]any)
+		held, _ := out["held"].([]any)
+		if len(held) != 0 {
+			t.Fatalf("%s holds a group publication; a group is not a direct address: %v", who, out)
+		}
+		return len(claims)
+	}
+
+	// Before the decision it reaches nobody, which is what "pending" means.
+	if n := received("carol"); n != 0 {
+		t.Fatalf("a group publication reached the scope before any decision: %d claims", n)
+	}
+
+	rec, _ := call(t, s, "/internal/v1/decide", map[string]any{
+		"tuple": tup("bob"), "as": "person", "activityId": actID,
+		"accept": true, "governs": true,
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("decide: %d", rec.Code)
+	}
+
+	// After it, every member of the scope reads it -- carol was never named.
+	if n := received("carol"); n != 1 {
+		t.Fatalf("a decided group publication did not reach the scope: %d claims", n)
+	}
+	// And the author still does not see their own publication as received.
+	if n := received("alice"); n != 0 {
+		t.Fatalf("the author received their own publication: %d claims", n)
 	}
 }
 

@@ -18,10 +18,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/actor"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/blob"
 	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/httpapi"
 	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/mangrovelog"
 )
@@ -58,10 +60,15 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	blobs, err := blob.New(storeDir, envBytes("MANGROVE_MAX_BLOB_BYTES", blob.DefaultMaxBytes))
+	if err != nil {
+		return err
+	}
 
 	srv := &httpapi.Server{
 		Actors:  actors,
 		Log:     rlog,
+		Blobs:   blobs,
 		Members: &proxyMembers{base: proxyURL, token: token, client: &http.Client{Timeout: 10 * time.Second}},
 		Token:   token,
 		Logger:  log,
@@ -135,4 +142,19 @@ func (p *proxyMembers) SubscriptionMembers(tenantID, subsAccID string) ([]string
 		return nil, fmt.Errorf("mangrove: subscription members: %w", err)
 	}
 	return body.AccIDs, nil
+}
+
+// envBytes reads a byte count, falling back rather than failing: an unparseable
+// limit is an operator typo, and refusing to boot over one would take the whole
+// stack down for a setting that has a sane default.
+func envBytes(key string, fallback int64) int64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
 }
