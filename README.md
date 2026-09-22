@@ -199,6 +199,40 @@ REEF_PROXY_BASE_URL=http://crab-shell-proxy:8080 \
 | `REEF_LISTEN` | `:8090` | Internal network only. There is no public route. |
 | `REEF_PROXY_BASE_URL` | `http://crab-shell-proxy:8080` | Where the one membership question is asked. |
 
+### Inside the zombie-crab stack
+
+The service sits behind a compose profile, so it does not start with a plain
+`docker compose up` — that is [optionality](#optionality-and-no-lock-in) held by
+construction rather than by intent:
+
+```sh
+CRAB_REEF_TOKEN=<shared secret> \
+  docker compose --profile reef up -d --build crab-reef-network
+```
+
+### Smoke test
+
+`scripts/smoke.sh` exercises the paths that carry the design — identity from the
+tuple, the containment refusals, the per-author reduction, the admission hold.
+It uses only `sh` and `wget`, and ships in the image:
+
+```sh
+docker compose --profile reef exec -T crab-reef-network \
+  sh /usr/local/share/reef-smoke.sh
+```
+
+or against a local build:
+
+```sh
+REEF_URL=http://127.0.0.1:8090 REEF_TOKEN=<secret> ./scripts/smoke.sh
+```
+
+**One section skips without `crab-shell-proxy`.** Addressing a *named colleague*
+needs the proxy's membership endpoint, because the reef keeps no membership list
+of its own — so with the proxy absent the gate **fails closed** rather than
+assuming membership, and the script says so instead of reporting a pass. Self
+and subscription scopes need nothing but the reef.
+
 **Zero external dependencies.** `go.mod` has no `require` block; everything is
 the Go standard library. A public repository that asks you to trust it should
 have as little supply chain as possible.

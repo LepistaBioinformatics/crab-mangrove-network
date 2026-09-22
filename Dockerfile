@@ -12,6 +12,10 @@ RUN adduser -D -u 10001 reef && mkdir -p /data/reef && chown reef:reef /data/ree
 # proxy it mounts no Docker socket and needs no privileged operation.
 USER reef
 COPY --from=build /out/crab-reef-network /usr/local/bin/crab-reef-network
+# Shipped so the service can be exercised where it actually runs, with no host
+# tooling: `docker compose --profile reef exec -T crab-reef-network \
+#   sh /usr/local/share/reef-smoke.sh`. It uses only busybox sh and wget.
+COPY --from=build /src/scripts/smoke.sh /usr/local/share/reef-smoke.sh
 ENV REEF_STORE_DIR=/data/reef REEF_LISTEN=:8090
 EXPOSE 8090
 ENTRYPOINT ["/usr/local/bin/crab-reef-network"]
