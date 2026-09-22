@@ -107,7 +107,21 @@ type Object struct {
 	Cell      string     `json:"cell"`
 	Content   string     `json:"content,omitempty"`
 	MediaType string     `json:"mediaType,omitempty"`
+
+	// Blob names content in the blob store, for a MemoryFile. The bytes are
+	// deliberately NOT here: the log is JSONL and a megabyte on one line fails
+	// the read of the whole shard rather than of this post.
+	Blob string `json:"blob,omitempty"`
+	// FileName is what the member called it. It is display only -- nothing
+	// resolves it to a path, and it never reaches a filesystem.
+	FileName string `json:"fileName,omitempty"`
+	// Size is the byte length, so a reader can say how large before fetching.
+	Size int64 `json:"size,omitempty"`
 }
+
+// IsFile reports whether this object carries content in the blob store rather
+// than inline.
+func (o Object) IsFile() bool { return o.Type == MemoryFile }
 
 // Signature is detached and covers Canonical(a).
 type Signature struct {

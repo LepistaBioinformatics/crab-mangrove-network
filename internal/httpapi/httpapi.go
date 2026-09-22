@@ -32,6 +32,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -39,6 +40,7 @@ import (
 
 	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/activity"
 	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/actor"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/blob"
 	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/mangrovelog"
 	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/reach"
 )
@@ -46,6 +48,7 @@ import (
 type Server struct {
 	Actors  *actor.Store
 	Log     *mangrovelog.Log
+	Blobs   *blob.Store
 	Members reach.Members
 	Token   string
 	Now     func() time.Time
@@ -97,6 +100,8 @@ func (s *Server) Routes() *http.ServeMux {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	mux.Handle("POST /internal/v1/blob", s.auth(s.handleBlobPut))
+	mux.Handle("POST /internal/v1/blob/fetch", s.auth(s.handleBlobGet))
 	mux.Handle("POST /internal/v1/publish", s.auth(s.handlePublish))
 	mux.Handle("POST /internal/v1/share", s.auth(s.handleShare))
 	mux.Handle("POST /internal/v1/react", s.auth(s.handleReact))
@@ -118,6 +123,13 @@ func (s *Server) auth(next http.HandlerFunc) http.Handler {
 		}
 		next(w, r)
 	})
+}
+
+// readJSON decodes a request body. Bounded, because every caller here is
+// describing an operation rather than carrying content -- the bytes go through
+// the blob route, which streams.
+func readJSON(r *http.Request, v any) error {
+	return json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(v)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -211,8 +223,8 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "object.cell is required: it is what the reduction is keyed by")
 		return
 	}
-	if req.Object.Type != activity.MemoryNote && req.Object.Type != activity.MemoryFile {
-		writeErr(w, http.StatusBadRequest, "object.type must be MemoryNote or MemoryFile")
+	if err := s.checkObject(req.Object); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.Object.ID == "" {
@@ -234,6 +246,42 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 // member scope and therefore waits on a role holder (FR-F1). Addressing a
 // specific colleague is not a scope crossing -- it waits on that person instead
 // (FR-B7, handleAdmit).
+// checkObject is the first place this service has ever treated its two object
+// types differently. Until now both were validated against the same membership
+// test and then handled identically, which is how MemoryFile came to mean
+// nothing at all.
+//
+// A file's bytes live in the blob store and its `content` is empty; a note's
+// content is inline and it names no blob. Refusing the mixtures is what keeps a
+// reader from having to ask which of the two a given object really is.
+func (s *Server) checkObject(o activity.Object) error {
+	switch o.Type {
+	case activity.MemoryNote:
+		if o.Blob != "" || o.FileName != "" || o.Size != 0 {
+			return errors.New("a MemoryNote carries its content inline and names no blob")
+		}
+		return nil
+
+	case activity.MemoryFile:
+		if o.Content != "" {
+			return errors.New("a MemoryFile carries its bytes in the blob store, not in object.content")
+		}
+		if o.Blob == "" || o.FileName == "" {
+			return errors.New("a MemoryFile needs object.blob and object.fileName")
+		}
+		if s.Blobs == nil || !s.Blobs.Has(o.Blob) {
+			// Refused HERE rather than at read: a post naming content nobody
+			// holds is a broken promise made to every recipient, and the author
+			// is the only one who can still fix it.
+			return errors.New("object.blob names content this mangrove does not hold; upload it first")
+		}
+		return nil
+
+	default:
+		return errors.New("object.type must be MemoryNote or MemoryFile")
+	}
+}
+
 func needsDecision(a activity.Activity) bool {
 	for _, addr := range a.Audience() {
 		if strings.HasPrefix(addr, "mangrove:group:") {

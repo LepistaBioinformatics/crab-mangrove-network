@@ -10,6 +10,7 @@ import (
 
 	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/activity"
 	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/actor"
+	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/blob"
 	"github.com/LepistaBioinformatics/crab-mangrove-network/internal/mangrovelog"
 )
 
@@ -38,9 +39,13 @@ func newServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("log: %v", err)
 	}
+	bs, err := blob.New(dir, 0)
+	if err != nil {
+		t.Fatalf("blob store: %v", err)
+	}
 	n := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
 	return &Server{
-		Actors: as, Log: lg, Members: fakeMembers{}, Token: token,
+		Actors: as, Log: lg, Blobs: bs, Members: fakeMembers{}, Token: token,
 		Now: func() time.Time { n = n.Add(time.Second); return n },
 	}
 }
