@@ -1,0 +1,216 @@
+// Package reeflog is the memory: an append-only log of signed activities, and
+// the reduction that turns it back into readable state.
+//
+// MEMORY IS A LOG, NOT A DOCUMENT. Update and Delete append; they never
+// overwrite. That is what makes divergence survivable -- and divergence is a
+// normal state here, not an error to prevent. Two readers may hold different
+// prefixes of the same log and still converge, which is also what keeps
+// cross-deployment federation an extension later rather than a rewrite.
+//
+// REDUCTION IS LAST-WRITER-WINS PER AUTHOR, NEVER BY GLOBAL TIMESTAMP. The map
+// is keyed by (cell, author): each author has authority over their own claims
+// about a cell, and nobody's write overwrites anybody else's. Cross-author
+// overwrite is not prevented by a check -- it is UNREPRESENTABLE, because there
+// is nowhere in the data structure to put it. Without this, shared memory
+// degenerates into an edit war.
+//
+// TRUST IS WEIGHT OF EVIDENCE, NEVER A TRUTH PREDICATE. A claim carries a count
+// of the actors who endorsed it (Like). Nothing anywhere marks a claim true or
+// false, and no reduction resolves two authors' disagreement into one answer.
+// Presenting both, with their evidence, is the answer.
+//
+// The file format is JSONL, one activity per line, matching what
+// crab-shell-proxy's memory graph already writes. Append-only is the natural
+// shape of an append-only file.
+package reeflog
+
+import (
+	"bufio"
+	"crypto/ed25519"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/LepistaBioinformatics/crab-reef-network/internal/activity"
+	"github.com/LepistaBioinformatics/crab-reef-network/internal/actor"
+)
+
+// Keys resolves the verification key for an author. actor.Store satisfies it.
+type Keys interface {
+	PublicKey(actorID string) (ed25519.PublicKey, error)
+}
+
+// Log is sharded by (tenant, subscription): the widest unit any single read
+// needs, which keeps one subscription's volume off another's read path.
+type Log struct{ root string }
+
+func New(root string) (*Log, error) {
+	if err := os.MkdirAll(filepath.Join(root, "log"), 0o700); err != nil {
+		return nil, fmt.Errorf("reeflog: %w", err)
+	}
+	return &Log{root: root}, nil
+}
+
+func (l *Log) shard(tenantID, subsAccID string) string {
+	return filepath.Join(l.root, "log", sanitize(tenantID), sanitize(subsAccID)+".jsonl")
+}
+
+func sanitize(s string) string {
+	r := strings.NewReplacer("/", "-", "\\", "-", "..", "-", string(os.PathSeparator), "-")
+	out := strings.TrimSpace(r.Replace(s))
+	if out == "" || out == "." {
+		return "unknown"
+	}
+	return out
+}
+
+// Append verifies the signature and then writes one line. Verification is a
+// PRECONDITION, not a later audit: an unverified line never lands, so anything
+// read back out of the log was signed by the actor it names.
+func (l *Log) Append(tenantID, subsAccID string, a activity.Activity, k Keys) error {
+	if !a.Type.Known() {
+		return fmt.Errorf("reeflog: unknown activity type %q", a.Type)
+	}
+	if actor.AccIDOf(a.Actor) == "" {
+		return fmt.Errorf("reeflog: %q is not a reef actor id", a.Actor)
+	}
+	pub, err := k.PublicKey(a.Actor)
+	if err != nil {
+		return fmt.Errorf("reeflog: resolve key for %s: %w", a.Actor, err)
+	}
+	if err := activity.Verify(a, pub); err != nil {
+		return err
+	}
+
+	p := l.shard(tenantID, subsAccID)
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return fmt.Errorf("reeflog: %w", err)
+	}
+	b, err := json.Marshal(a)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("reeflog: open shard: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		return fmt.Errorf("reeflog: append: %w", err)
+	}
+	return nil
+}
+
+// Read returns every activity in a shard, in write order. A missing shard is an
+// empty log, not an error: a subscription nobody has published in yet is a
+// normal state and must not read as a failure.
+func (l *Log) Read(tenantID, subsAccID string) ([]activity.Activity, error) {
+	f, err := os.Open(l.shard(tenantID, subsAccID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reeflog: open shard: %w", err)
+	}
+	defer f.Close()
+
+	var out []activity.Activity
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var a activity.Activity
+		if err := json.Unmarshal([]byte(line), &a); err != nil {
+			return nil, fmt.Errorf("reeflog: decode line: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("reeflog: scan: %w", err)
+	}
+	return out, nil
+}
+
+// Claim is one author's current position on one cell.
+type Claim struct {
+	Cell      string          `json:"cell"`
+	Author    string          `json:"author"`
+	Object    activity.Object `json:"object"`
+	Published string          `json:"published"`
+	Deleted   bool            `json:"deleted"`
+	// Evidence counts distinct actors who endorsed this claim with Like.
+	// It is a weight, not a verdict. Nothing reads it as truth.
+	Evidence int `json:"evidence"`
+	// Audience is the addressing of the winning activity, so a reader can see
+	// how far this claim travelled.
+	Audience []string `json:"audience"`
+}
+
+// Reduce folds a log into claims, keyed by cell and then by author.
+//
+// The two-level map IS the guarantee. There is no code path that lets one
+// author's entry replace another's, because they do not share a slot.
+func Reduce(acts []activity.Activity) map[string][]Claim {
+	type key struct{ cell, author string }
+	latest := map[key]activity.Activity{}
+	// Endorsements are counted per (object id, endorsing actor) so that one
+	// actor liking the same object twice still weighs one.
+	endorsed := map[string]map[string]bool{}
+
+	for _, a := range acts {
+		switch a.Type {
+		case activity.Create, activity.Update, activity.Delete:
+			if a.Object == nil {
+				continue
+			}
+			k := key{cell: a.Object.Cell, author: a.Actor}
+			if prev, ok := latest[k]; !ok || a.Published >= prev.Published {
+				latest[k] = a
+			}
+		case activity.Like:
+			if a.InReplyTo == "" {
+				continue
+			}
+			if endorsed[a.InReplyTo] == nil {
+				endorsed[a.InReplyTo] = map[string]bool{}
+			}
+			endorsed[a.InReplyTo][a.Actor] = true
+		case activity.Undo:
+			// An Undo of a Like withdraws the endorsement. Undo of anything
+			// else is handled by the verb it refers to, at read time.
+			if a.InReplyTo != "" && endorsed[a.InReplyTo] != nil {
+				delete(endorsed[a.InReplyTo], a.Actor)
+			}
+		}
+	}
+
+	out := map[string][]Claim{}
+	for k, a := range latest {
+		c := Claim{
+			Cell:      k.cell,
+			Author:    k.author,
+			Published: a.Published,
+			Deleted:   a.Type == activity.Delete,
+			Evidence:  len(endorsed[a.Object.ID]),
+			Audience:  a.Audience(),
+		}
+		if a.Object != nil {
+			c.Object = *a.Object
+		}
+		out[k.cell] = append(out[k.cell], c)
+	}
+	// Stable order so two readers of the same log render the same page.
+	for cell := range out {
+		claims := out[cell]
+		sort.Slice(claims, func(i, j int) bool { return claims[i].Author < claims[j].Author })
+		out[cell] = claims
+	}
+	return out
+}

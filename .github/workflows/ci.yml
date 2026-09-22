@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      # go.mod has no require block, and that is a property worth keeping
+      # rather than a coincidence: a public repository asking to be trusted
+      # should carry as little supply chain as possible. This fails the build
+      # if a dependency is ever added without that being a deliberate decision.
+      - name: no external dependencies
+        run: |
+          if grep -q '^require' go.mod; then
+            echo "go.mod gained a require block; the zero-dependency posture is deliberate (see README)." >&2
+            exit 1
+          fi
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test -race ./...

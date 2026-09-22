@@ -1,0 +1,5 @@
+/crab-reef-network
+/dist/
+/store/
+/data/
+*.ed25519
