@@ -73,6 +73,19 @@ func (t Type) Widening() bool {
 	return false
 }
 
+// TimeFormat is FIXED WIDTH, and that is the whole point of it existing.
+//
+// time.RFC3339Nano uses "9" digits in its fractional part, which means Go ELIDES
+// trailing zeros: the same clock produces "10:00:00Z" and "10:00:00.5Z". Those
+// two do not order correctly as strings -- '.' is 0x2E and 'Z' is 0x5A, so
+// "10:00:00.5Z" sorts BEFORE "10:00:00Z" -- and the log's reduction is an
+// ordering over exactly this field. A whole-second write would lose to an
+// earlier sub-second one.
+//
+// Reduction parses rather than compares strings (see reeflog), so this is
+// belt and braces; it also keeps the log readable and diffable.
+const TimeFormat = "2006-01-02T15:04:05.000000000Z07:00"
+
 // ObjectType is what a memory object is. Two kinds, matching what this stack
 // actually accumulates: knowledge-graph material and workspace files.
 type ObjectType string
@@ -114,6 +127,15 @@ type Activity struct {
 	InReplyTo string     `json:"inReplyTo,omitempty"`
 	Published string     `json:"published"`
 	Signature *Signature `json:"signature,omitempty"`
+
+	// UndoType names the verb an Undo withdraws.
+	//
+	// Without it, every Undo of a Read, a Like and a Flag on the same object is
+	// the SAME activity, and the reduction cannot tell them apart -- so undoing
+	// a read receipt would silently withdraw an endorsement. AS2 models Undo as
+	// referring to the prior activity; this field carries that intent without
+	// requiring every reader to resolve the reference first.
+	UndoType Type `json:"undoType,omitempty"`
 }
 
 // Audience is every actor or group this activity is addressed to, to and cc

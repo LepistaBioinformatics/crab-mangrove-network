@@ -151,7 +151,7 @@ func (s *Server) emit(t actor.Tuple, author *actor.Actor, a *activity.Activity) 
 		a.ID = newID("reef:act:")
 	}
 	if a.Published == "" {
-		a.Published = s.now().Format(time.RFC3339Nano)
+		a.Published = s.now().Format(activity.TimeFormat)
 	}
 	if a.To == nil {
 		a.To = []string{}
@@ -322,7 +322,10 @@ func (s *Server) handleReact(w http.ResponseWriter, r *http.Request) {
 	}
 	a := activity.Activity{Type: typ, InReplyTo: req.Ref}
 	if req.Undo {
-		a = activity.Activity{Type: activity.Undo, InReplyTo: req.Ref}
+		// UndoType names WHICH verb is being withdrawn. Without it, undoing a
+		// read receipt and undoing an endorsement are the same activity, and
+		// the reduction would treat the first as the second.
+		a = activity.Activity{Type: activity.Undo, InReplyTo: req.Ref, UndoType: typ}
 	}
 	if err := s.emit(req.Tuple, author, &a); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -405,11 +408,31 @@ func (s *Server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// The scope goes in `target`, which is what makes this a GOVERNANCE
+	// decision rather than an admission. Without it the two are the same
+	// activity and one would satisfy the other -- see admissions().
+	acts, err := s.Log.Read(req.Tuple.TenantID, req.Tuple.SubsAccID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	scope := ""
+	for _, prior := range acts {
+		if prior.ID == req.ActivityID {
+			scope = scopeOf(prior)
+			break
+		}
+	}
+	if scope == "" {
+		writeErr(w, http.StatusBadRequest, "no pending cross-scope publication with that id")
+		return
+	}
+
 	typ := activity.Reject
 	if req.Accept {
 		typ = activity.Accept
 	}
-	a := activity.Activity{Type: typ, InReplyTo: req.ActivityID}
+	a := activity.Activity{Type: typ, InReplyTo: req.ActivityID, Target: scope}
 	if err := s.emit(req.Tuple, author, &a); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -515,7 +538,14 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 
 	me := actor.PersonID(req.Tuple.UserAccID)
 	mine := actor.ServiceID(req.Tuple.UserAccID)
-	decided := decidedSet(acts)
+	admitted := admissions(acts)
+	governed := governanceDecisions(acts)
+
+	// Admitted BY THIS MEMBER, not by anybody. One recipient accepting must not
+	// clear another recipient's hold.
+	admittedByMe := func(activityID string) bool {
+		return admitted[activityID][me] || admitted[activityID][mine]
+	}
 
 	switch strings.ToLower(req.Reading) {
 	case "published":
@@ -534,16 +564,10 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		// data question only.
 		var out []pendingDecision
 		for _, a := range acts {
-			if !needsDecision(a) || decided[a.ID] || a.Object == nil {
+			if !needsDecision(a) || governed[a.ID] || a.Object == nil {
 				continue
 			}
-			scope := ""
-			for _, addr := range a.Audience() {
-				if strings.HasPrefix(addr, "reef:group:") {
-					scope = addr
-					break
-				}
-			}
+			scope := scopeOf(a)
 			out = append(out, pendingDecision{
 				ActivityID: a.ID, Author: a.Actor, Scope: scope,
 				Object: *a.Object, Published: a.Published,
@@ -569,13 +593,14 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			switch {
-			case direct && !decided[a.ID]:
+			case direct && !admittedByMe(a.ID):
 				// FR-B7: visible to the human, NOT yet in the agent's memory.
+				// The hold is cleared only by THIS member admitting it.
 				held = append(held, heldItem{
 					ActivityID: a.ID, From: a.Actor,
 					Object: *a.Object, Published: a.Published,
 				})
-			case direct, viaGroup && decided[a.ID]:
+			case direct, viaGroup && governed[a.ID]:
 				visible = append(visible, a)
 			}
 		}
@@ -587,16 +612,62 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// decidedSet collects the activities an Accept or Reject already answered, so
-// "pending" is derived rather than stored. Nothing mutates a signed line.
-func decidedSet(acts []activity.Activity) map[string]bool {
+// admissions and governanceDecisions are TWO DIFFERENT THINGS, and collapsing
+// them into one "has it been decided" set is a real hole rather than an
+// untidiness.
+//
+// Both are expressed as Accept/Reject on a prior activity, because those are
+// the right standard verbs for both. They differ in who is answering and on
+// whose behalf:
+//
+//	ADMISSION  -- a recipient letting an object into THEIR OWN agent's memory
+//	              (FR-B7). Keyed by activity AND by the actor who admitted.
+//	GOVERNANCE -- a role holder deciding whether a cross-scope publication may
+//	              travel (FR-F2). Carries the scope in `target`.
+//
+// Keying admission by activity alone would mean one recipient's Accept cleared
+// the hold for EVERY other addressee of the same activity -- and a governing
+// role holder accepting a group publication would clear it for every direct
+// addressee too. That is exactly the failure FR-B7 exists to prevent: memory
+// entering somebody's agent without that person admitting it.
+func admissions(acts []activity.Activity) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for _, a := range acts {
+		if a.Type != activity.Accept || a.InReplyTo == "" {
+			continue
+		}
+		if strings.HasPrefix(a.Target, "reef:group:") {
+			continue // a governance decision, not an admission
+		}
+		if out[a.InReplyTo] == nil {
+			out[a.InReplyTo] = map[string]bool{}
+		}
+		out[a.InReplyTo][a.Actor] = true
+	}
+	return out
+}
+
+func governanceDecisions(acts []activity.Activity) map[string]bool {
 	out := map[string]bool{}
 	for _, a := range acts {
-		if (a.Type == activity.Accept || a.Type == activity.Reject) && a.InReplyTo != "" {
+		if a.Type != activity.Accept && a.Type != activity.Reject {
+			continue
+		}
+		if a.InReplyTo != "" && strings.HasPrefix(a.Target, "reef:group:") {
 			out[a.InReplyTo] = true
 		}
 	}
 	return out
+}
+
+// scopeOf returns the group an activity was addressed to, or "".
+func scopeOf(a activity.Activity) string {
+	for _, addr := range a.Audience() {
+		if strings.HasPrefix(addr, "reef:group:") {
+			return addr
+		}
+	}
+	return ""
 }
 
 func flatten(m map[string][]reeflog.Claim) []reeflog.Claim {

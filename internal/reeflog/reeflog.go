@@ -34,6 +34,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/LepistaBioinformatics/crab-reef-network/internal/activity"
 	"github.com/LepistaBioinformatics/crab-reef-network/internal/actor"
@@ -138,6 +139,37 @@ func (l *Log) Read(tenantID, subsAccID string) ([]activity.Activity, error) {
 	return out, nil
 }
 
+// newer reports whether a supersedes prev for the same (cell, author).
+//
+// IT PARSES RATHER THAN COMPARING STRINGS. `published` is an RFC 3339 instant,
+// and RFC 3339 has two properties that make lexicographic comparison wrong: a
+// fractional part that may be present or absent, and an offset that may be `Z`
+// or `+01:00`. Either one inverts the order for some pair of real timestamps.
+// This is the ordering the whole last-writer-wins reduction rests on, so it is
+// done on time.Time.
+//
+// An unparseable timestamp loses to a parseable one, and two equally
+// unparseable ones fall back to a string comparison so the result stays
+// deterministic instead of depending on log order.
+func newer(a, prev activity.Activity) bool {
+	at, aErr := time.Parse(time.RFC3339, a.Published)
+	pt, pErr := time.Parse(time.RFC3339, prev.Published)
+	switch {
+	case aErr == nil && pErr == nil:
+		if at.Equal(pt) {
+			// A genuine tie: pick deterministically rather than by arrival.
+			return a.ID > prev.ID
+		}
+		return at.After(pt)
+	case aErr == nil:
+		return true
+	case pErr == nil:
+		return false
+	default:
+		return a.Published > prev.Published
+	}
+}
+
 // Claim is one author's current position on one cell.
 type Claim struct {
 	Cell      string          `json:"cell"`
@@ -171,7 +203,7 @@ func Reduce(acts []activity.Activity) map[string][]Claim {
 				continue
 			}
 			k := key{cell: a.Object.Cell, author: a.Actor}
-			if prev, ok := latest[k]; !ok || a.Published >= prev.Published {
+			if prev, ok := latest[k]; !ok || newer(a, prev) {
 				latest[k] = a
 			}
 		case activity.Like:
@@ -183,9 +215,12 @@ func Reduce(acts []activity.Activity) map[string][]Claim {
 			}
 			endorsed[a.InReplyTo][a.Actor] = true
 		case activity.Undo:
-			// An Undo of a Like withdraws the endorsement. Undo of anything
-			// else is handled by the verb it refers to, at read time.
-			if a.InReplyTo != "" && endorsed[a.InReplyTo] != nil {
+			// ONLY an Undo that says it withdraws a Like touches the evidence
+			// count. Undoing a Read receipt must not silently remove an
+			// endorsement of the same object -- they are different verbs and
+			// an Undo that does not name one is ambiguous, so it is ignored
+			// here rather than guessed at.
+			if a.UndoType == activity.Like && a.InReplyTo != "" && endorsed[a.InReplyTo] != nil {
 				delete(endorsed[a.InReplyTo], a.Actor)
 			}
 		}

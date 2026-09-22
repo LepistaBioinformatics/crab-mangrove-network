@@ -180,10 +180,76 @@ func TestEvidenceIsWeightNotVerdict(t *testing.T) {
 		t.Fatalf("evidence = %d, want 2 distinct endorsers", claims[0].Evidence)
 	}
 
-	publish(t, as, lg, "bob", activity.Activity{ID: "u1", Type: activity.Undo, InReplyTo: a.Object.ID, Published: "2026-09-21T12:00:00Z"})
+	publish(t, as, lg, "bob", activity.Activity{
+		ID: "u1", Type: activity.Undo, UndoType: activity.Like,
+		InReplyTo: a.Object.ID, Published: "2026-09-21T12:00:00Z",
+	})
 	acts, _ = lg.Read("t1", "s1")
 	if got := Reduce(acts)["soil-ph"][0].Evidence; got != 1 {
 		t.Errorf("evidence after Undo = %d, want 1", got)
+	}
+}
+
+// Undoing a READ RECEIPT must not withdraw an ENDORSEMENT of the same object.
+// They are different verbs; an Undo that does not name which one it withdraws
+// is ambiguous, and guessing costs a signal nobody asked to lose.
+func TestUndoingAReadDoesNotWithdrawALike(t *testing.T) {
+	as, lg := newStore(t)
+	a := publish(t, as, lg, "alice", note("1", "soil-ph", "5.8", "2026-09-21T10:00:00Z"))
+
+	publish(t, as, lg, "bob", activity.Activity{ID: "l1", Type: activity.Like, InReplyTo: a.Object.ID, Published: "2026-09-21T11:00:00Z"})
+	publish(t, as, lg, "bob", activity.Activity{ID: "r1", Type: activity.Read, InReplyTo: a.Object.ID, Published: "2026-09-21T11:30:00Z"})
+
+	// Bob withdraws only the receipt.
+	publish(t, as, lg, "bob", activity.Activity{
+		ID: "u1", Type: activity.Undo, UndoType: activity.Read,
+		InReplyTo: a.Object.ID, Published: "2026-09-21T12:00:00Z",
+	})
+
+	acts, _ := lg.Read("t1", "s1")
+	if got := Reduce(acts)["soil-ph"][0].Evidence; got != 1 {
+		t.Errorf("evidence = %d after undoing a READ; the endorsement must survive", got)
+	}
+}
+
+// The reduction orders by instant, not by byte.
+//
+// RFC 3339 admits a fractional part that may be absent and an offset that may
+// be `Z` or numeric, and both break a lexicographic comparison: '.' (0x2E)
+// sorts before 'Z' (0x5A), so "10:00:00.5Z" < "10:00:00Z" as strings while the
+// first is the LATER instant. Last-writer-wins rests entirely on this ordering.
+func TestOrderingIsByInstantNotByString(t *testing.T) {
+	// Guard the premise, so this test still means something if Go ever changes.
+	if !("2026-09-21T10:00:00.5Z" < "2026-09-21T10:00:00Z") {
+		t.Skip("byte ordering no longer inverts these; the risk this pins is gone")
+	}
+
+	as, lg := newStore(t)
+	publish(t, as, lg, "alice", note("1", "soil-ph", "whole second", "2026-09-21T10:00:00Z"))
+	publish(t, as, lg, "alice", note("2", "soil-ph", "half a second later", "2026-09-21T10:00:00.5Z"))
+
+	acts, _ := lg.Read("t1", "s1")
+	claims := Reduce(acts)["soil-ph"]
+	if len(claims) != 1 {
+		t.Fatalf("got %d claims for one author", len(claims))
+	}
+	if claims[0].Object.Content != "half a second later" {
+		t.Errorf("content = %q; the sub-second write is the later instant and must win", claims[0].Object.Content)
+	}
+}
+
+// The same hazard from the other direction: a numeric offset naming an EARLIER
+// instant than a `Z` timestamp that sorts below it.
+func TestOrderingHandlesOffsets(t *testing.T) {
+	as, lg := newStore(t)
+	// 09:30:00Z, written as 10:30 in +01:00 -- earlier than 10:00:00Z by instant,
+	// later by string.
+	publish(t, as, lg, "alice", note("1", "soil-ph", "later", "2026-09-21T10:00:00Z"))
+	publish(t, as, lg, "alice", note("2", "soil-ph", "earlier", "2026-09-21T10:30:00+01:00"))
+
+	acts, _ := lg.Read("t1", "s1")
+	if got := Reduce(acts)["soil-ph"][0].Object.Content; got != "later" {
+		t.Errorf("content = %q; 10:30+01:00 is 09:30Z and must not beat 10:00Z", got)
 	}
 }
 

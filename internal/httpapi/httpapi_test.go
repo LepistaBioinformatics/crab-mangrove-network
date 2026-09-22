@@ -21,6 +21,12 @@ func (fakeMembers) SubscriptionMembers(string, string) ([]string, error) {
 	return []string{"alice", "bob"}, nil
 }
 
+type threeMembers struct{}
+
+func (threeMembers) SubscriptionMembers(string, string) ([]string, error) {
+	return []string{"alice", "bob", "carol"}, nil
+}
+
 func newServer(t *testing.T) *Server {
 	t.Helper()
 	dir := t.TempDir()
@@ -200,6 +206,73 @@ func TestAdmitRequiredBeforeIngest(t *testing.T) {
 	claims, _ = out["claims"].([]any)
 	if len(held) != 0 || len(claims) != 1 {
 		t.Fatalf("after admission want 0 held / 1 claim, got %d/%d (%v)", len(held), len(claims), out)
+	}
+}
+
+// ONE RECIPIENT'S ADMISSION MUST NOT CLEAR ANOTHER'S HOLD.
+//
+// Keying admission by activity alone makes Carol's Accept let the object into
+// Alice's agent, which is precisely the thing FR-B7 exists to stop: memory
+// entering somebody's agent without that person admitting it.
+func TestAdmissionIsPerRecipient(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+
+	_, out := call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple":  tup("bob"),
+		"to":     []string{actor.ServiceID("alice"), actor.ServiceID("carol")},
+		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "6.4"},
+	}, true)
+	sentID := out["activity"].(map[string]any)["id"].(string)
+
+	// Carol admits it for herself.
+	rec, _ := call(t, s, "/internal/v1/admit", map[string]any{
+		"tuple": tup("carol"), "as": "person", "activityId": sentID,
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("carol could not admit: %d", rec.Code)
+	}
+
+	// Alice admitted nothing, so for Alice it is still held.
+	_, out = call(t, s, "/internal/v1/timeline", map[string]any{
+		"tuple": tup("alice"), "reading": "received",
+	}, true)
+	held, _ := out["held"].([]any)
+	claims, _ := out["claims"].([]any)
+	if len(held) != 1 || len(claims) != 0 {
+		t.Fatalf("carol's admission leaked into alice's agent: held=%d claims=%d (%v)", len(held), len(claims), out)
+	}
+}
+
+// A governing role holder accepting a group publication must not clear the
+// hold for the direct addressees of that same activity either.
+func TestGovernanceDecisionIsNotAnAdmission(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+
+	_, out := call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple": tup("bob"),
+		"to": []string{
+			actor.SubscriptionGroupID("s1"),
+			actor.ServiceID("alice"),
+		},
+		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "6.4"},
+	}, true)
+	sentID := out["activity"].(map[string]any)["id"].(string)
+
+	rec, _ := call(t, s, "/internal/v1/decide", map[string]any{
+		"tuple": tup("carol"), "as": "person", "activityId": sentID,
+		"accept": true, "governs": true,
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("decide: %d", rec.Code)
+	}
+
+	_, out = call(t, s, "/internal/v1/timeline", map[string]any{
+		"tuple": tup("alice"), "reading": "received",
+	}, true)
+	if held, _ := out["held"].([]any); len(held) != 1 {
+		t.Fatalf("a governance Accept cleared a direct addressee's hold: %v", out)
 	}
 }
 
