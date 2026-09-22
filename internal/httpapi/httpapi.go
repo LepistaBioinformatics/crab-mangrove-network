@@ -486,10 +486,24 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "only the human may revoke; an agent cannot revoke on its own authority")
 		return
 	}
+	// THE TOMBSTONE HAS TO TRAVEL WHERE THE CLAIM TRAVELLED.
+	//
+	// A Delete with no audience reaches nobody but its author. The reduction
+	// only ever sees the activities a reader can reach, so a recipient's copy of
+	// the claim never learned it had been tombstoned -- the author saw
+	// `deleted: true` and everybody they had shared with went on reading it as
+	// live, with not even a strikethrough. A revoke that only convinces the
+	// person who performed it is worse than no revoke at all.
+	reached, err := s.audienceOf(req.Tuple, author.ID, req.Cell, req.ObjectID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	a := activity.Activity{
 		Type:      activity.Delete,
 		Object:    &activity.Object{ID: req.ObjectID, Type: activity.MemoryNote, Cell: req.Cell},
 		InReplyTo: req.ObjectID,
+		To:        reached,
 	}
 	if err := s.emit(req.Tuple, author, &a); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -529,6 +543,48 @@ type pendingDecision struct {
 	Scope      string          `json:"scope"`
 	Object     activity.Object `json:"object"`
 	Published  string          `json:"published"`
+}
+
+// audienceOf is everywhere this author's claim on this cell has been addressed,
+// so a tombstone can be addressed the same way.
+//
+// It is the UNION across every activity the author wrote for the cell, not just
+// the last one: an object published privately and shared onward later has
+// reached more people than its Create says, and a tombstone that copied only
+// the Create would leave exactly those later recipients still reading it.
+//
+// Duplicates are dropped and order is kept, because the audience is signed:
+// two revokes of the same thing should produce the same bytes.
+func (s *Server) audienceOf(t actor.Tuple, authorID, cell, objectID string) ([]string, error) {
+	acts, err := s.Log.Read(t.TenantID, t.SubsAccID)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, a := range acts {
+		if a.Actor != authorID {
+			continue
+		}
+		// TWO SHAPES, because widening happens in two shapes. A Create or
+		// Update carries the object and names the cell; a Share emits an Add
+		// with NO object at all -- only a Target and the object id in
+		// InReplyTo. Matching on the cell alone would miss every recipient who
+		// arrived through a share, which is precisely the set a tombstone
+		// copying only the Create would leave behind.
+		byCell := a.Object != nil && a.Object.Cell == cell
+		byObject := objectID != "" && a.InReplyTo == objectID
+		if !byCell && !byObject {
+			continue
+		}
+		for _, addr := range a.Audience() {
+			if !seen[addr] {
+				seen[addr] = true
+				out = append(out, addr)
+			}
+		}
+	}
+	return out, nil
 }
 
 func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
@@ -581,6 +637,9 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	default: // received
 		var visible []activity.Activity
 		var held []heldItem
+		// (cell, author) pairs this member has been told are withdrawn.
+		tombstoned := map[string]bool{}
+
 		for _, a := range acts {
 			if a.Object == nil {
 				continue
@@ -595,7 +654,23 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 				})
 			case reachVisible:
 				visible = append(visible, a)
+				if a.Type == activity.Delete {
+					tombstoned[a.Object.Cell+"\x00"+a.Actor] = true
+				}
 			}
+		}
+
+		// Something withdrawn before it was ever taken simply goes away. Leaving
+		// it in the held list would offer an Admit for content the author has
+		// already recalled.
+		if len(tombstoned) > 0 {
+			kept := held[:0]
+			for _, h := range held {
+				if !tombstoned[h.Object.Cell+"\x00"+h.From] {
+					kept = append(kept, h)
+				}
+			}
+			held = kept
 		}
 		writeJSON(w, http.StatusOK, timelineResp{
 			Reading: "received",

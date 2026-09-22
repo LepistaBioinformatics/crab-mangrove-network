@@ -74,13 +74,24 @@ func (v viewer) reach(a activity.Activity) reachOf {
 			viaGroup = true
 		}
 	}
-	switch {
-	case direct && !v.admittedByMe(a.ID):
-		return reachHeld
-	case direct, viaGroup && v.governed[a.ID]:
+	if !direct && !(viaGroup && v.governed[a.ID]) {
+		return reachNone
+	}
+
+	// A TOMBSTONE IS NEVER HELD. The hold exists so that content does not enter
+	// an agent's memory before its human takes it; a Delete is not content, and
+	// nobody admits a withdrawal. Held, it would sit waiting for an admission
+	// that never comes while the claim it withdraws went on reading as live --
+	// which is exactly the shipped defect this rule was extracted to stop
+	// happening twice.
+	if a.Type == activity.Delete {
 		return reachVisible
 	}
-	return reachNone
+
+	if direct && !v.admittedByMe(a.ID) {
+		return reachHeld
+	}
+	return reachVisible
 }
 
 // reachable is every activity in the shard this member can see at all, in any

@@ -473,3 +473,161 @@ func TestGroupPublicationReachesTheScopeOnceDecided(t *testing.T) {
 		t.Fatalf("the author received their own publication: %d claims", n)
 	}
 }
+
+// TestRevokeReachesTheRecipientAndNotOnlyTheAuthor pins a defect that shipped:
+// the author saw `deleted: true` and every person they had shared with went on
+// reading the claim as live, with not even a strikethrough.
+//
+// The cause was that a Delete was emitted with no audience at all. The reduction
+// only ever sees the activities a reader can reach, so the tombstone reached
+// nobody but the person who wrote it. A revoke that convinces only the person
+// who performed it is worse than no revoke: they stop worrying about content
+// that is still being read.
+func TestRevokeReachesTheRecipientAndNotOnlyTheAuthor(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+
+	_, out := call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple": tup("alice"), "as": "person",
+		"to":     []string{actor.ServiceID("bob")},
+		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "6.4"},
+	}, true)
+	act := out["activity"].(map[string]any)
+	objID := act["object"].(map[string]any)["id"].(string)
+
+	rec, _ := call(t, s, "/internal/v1/admit", map[string]any{
+		"tuple": tup("bob"), "as": "person", "activityId": act["id"].(string),
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admit: %d", rec.Code)
+	}
+
+	deletedForBob := func() (int, bool) {
+		t.Helper()
+		_, out := call(t, s, "/internal/v1/timeline", map[string]any{
+			"tuple": tup("bob"), "reading": "received",
+		}, true)
+		claims, _ := out["claims"].([]any)
+		if len(claims) == 0 {
+			return 0, false
+		}
+		return len(claims), claims[0].(map[string]any)["deleted"] == true
+	}
+
+	if n, deleted := deletedForBob(); n != 1 || deleted {
+		t.Fatalf("before the revoke bob should hold one live claim, got n=%d deleted=%v", n, deleted)
+	}
+
+	rec, _ = call(t, s, "/internal/v1/revoke", map[string]any{
+		"tuple": tup("alice"), "as": "person", "objectId": objID, "cell": "soil-ph",
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke: %d", rec.Code)
+	}
+
+	if _, deleted := deletedForBob(); !deleted {
+		t.Error("the recipient still reads a revoked claim as live; the tombstone did not travel")
+	}
+	// The author's own view was always right, and must stay right.
+	_, out = call(t, s, "/internal/v1/timeline", map[string]any{
+		"tuple": tup("alice"), "reading": "published",
+	}, true)
+	claims, _ := out["claims"].([]any)
+	if len(claims) != 1 || claims[0].(map[string]any)["deleted"] != true {
+		t.Errorf("the author's view of their own revoke regressed: %v", out)
+	}
+}
+
+// The union, not the last activity: something published privately and shared
+// onward later has reached more people than its Create says, and a tombstone
+// copying only the Create would leave exactly those later recipients reading it.
+func TestARevokeReachesPeopleAddedAfterTheFirstPublication(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+
+	_, out := call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple": tup("alice"), "as": "person",
+		"to":     []string{},
+		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "6.4"},
+	}, true)
+	objID := out["activity"].(map[string]any)["object"].(map[string]any)["id"].(string)
+
+	rec, _ := call(t, s, "/internal/v1/share", map[string]any{
+		"tuple": tup("alice"), "as": "person",
+		"objectId": objID, "target": actor.ServiceID("bob"),
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("share: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec, _ = call(t, s, "/internal/v1/revoke", map[string]any{
+		"tuple": tup("alice"), "as": "person", "objectId": objID, "cell": "soil-ph",
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke: %d", rec.Code)
+	}
+
+	// The Delete must name bob, who only ever appeared on the Share.
+	deleteTo := out["activity"].(map[string]any)
+	_ = deleteTo
+	acts, err := s.Log.Read("t1", "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, a := range acts {
+		if a.Type != activity.Delete {
+			continue
+		}
+		for _, addr := range a.Audience() {
+			if addr == actor.ServiceID("bob") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("the tombstone did not name somebody the object only reached through a later share")
+	}
+}
+
+// Something withdrawn before it was ever taken simply goes away. Leaving it in
+// the held list would offer an Admit for content the author has already
+// recalled -- and taking it would put recalled content into the agent's memory.
+func TestRevokingSomethingStillHeldWithdrawsItEntirely(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+
+	_, out := call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple": tup("alice"), "as": "person",
+		"to":     []string{actor.ServiceID("bob")},
+		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "6.4"},
+	}, true)
+	objID := out["activity"].(map[string]any)["object"].(map[string]any)["id"].(string)
+
+	bobSees := func() (held, claims int) {
+		t.Helper()
+		_, out := call(t, s, "/internal/v1/timeline", map[string]any{
+			"tuple": tup("bob"), "reading": "received",
+		}, true)
+		h, _ := out["held"].([]any)
+		c, _ := out["claims"].([]any)
+		return len(h), len(c)
+	}
+
+	// bob has NOT admitted it: it is held.
+	if h, _ := bobSees(); h != 1 {
+		t.Fatalf("expected one held item before the revoke, got %d", h)
+	}
+
+	rec, _ := call(t, s, "/internal/v1/revoke", map[string]any{
+		"tuple": tup("alice"), "as": "person", "objectId": objID, "cell": "soil-ph",
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke: %d", rec.Code)
+	}
+
+	h, _ := bobSees()
+	if h != 0 {
+		t.Errorf("a recalled item is still offered for admission: %d held", h)
+	}
+}
