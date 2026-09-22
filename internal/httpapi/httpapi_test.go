@@ -126,6 +126,31 @@ func TestPublishRefusesAnOutOfReachAddresseeAndWritesNothing(t *testing.T) {
 	}
 }
 
+// TestAgentCannotAddressItsOwnSubscriptionGroup is the levelling decision seen
+// from the wire (AD-030). It used to succeed: a workspace tuple names a
+// subscription, and that was taken to license a broadcast to it. It does not --
+// membership is not governance, and an MCP token cannot prove governance.
+func TestAgentCannotAddressItsOwnSubscriptionGroup(t *testing.T) {
+	s := newServer(t)
+	rec, _ := call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple":  tup("alice"),
+		"to":     []string{actor.SubscriptionGroupID("s1")},
+		"object": map[string]any{"type": "MemoryNote", "cell": "c", "content": "x"},
+	}, true)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("an agent broadcast to its own subscription group: %d", rec.Code)
+	}
+
+	rec, _ = call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple": tup("alice"), "as": "person", "groupsLicensed": true,
+		"to":     []string{actor.SubscriptionGroupID("s1")},
+		"object": map[string]any{"type": "MemoryNote", "cell": "c", "content": "x"},
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a governing human could not reach its own subscription group: %d", rec.Code)
+	}
+}
+
 func TestAgentCannotAddressTheTenant(t *testing.T) {
 	s := newServer(t)
 	rec, _ := call(t, s, "/internal/v1/publish", map[string]any{
@@ -252,6 +277,10 @@ func TestGovernanceDecisionIsNotAnAdmission(t *testing.T) {
 
 	_, out := call(t, s, "/internal/v1/publish", map[string]any{
 		"tuple": tup("bob"),
+		// Addressing a Group at all takes governance now, so this publisher is
+		// a governing human rather than an agent. The test is about what an
+		// Accept does afterwards, which is unchanged either way.
+		"groupsLicensed": true,
 		"to": []string{
 			actor.SubscriptionGroupID("s1"),
 			actor.ServiceID("alice"),
@@ -303,7 +332,7 @@ func TestCrossScopePublicationIsPendingUntilAGoverningRoleDecides(t *testing.T) 
 	s := newServer(t)
 
 	_, out := call(t, s, "/internal/v1/publish", map[string]any{
-		"tuple":  tup("alice"),
+		"tuple": tup("alice"), "as": "person", "groupsLicensed": true,
 		"to":     []string{actor.SubscriptionGroupID("s1")},
 		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "5.8"},
 	}, true)
