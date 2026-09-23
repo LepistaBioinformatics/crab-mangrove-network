@@ -1,9 +1,6 @@
 // Command crab-mangrove-network runs the mangrove: a federated memory network for
 // zombie-crab agents.
 //
-// EXPERIMENTAL. See the README. Interfaces, the on-disk format and the
-// activity vocabulary may change without a migration path.
-//
 // It listens on an internal network and expects exactly one caller,
 // crab-shell-proxy, which has already authenticated the agent or human making
 // the request. There is no public route and no federation in this version.
@@ -78,7 +75,7 @@ func run(log *slog.Logger) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Info("mangrove listening", "addr", listen, "store", storeDir, "experimental", true)
+		log.Info("mangrove listening", "addr", listen, "store", storeDir)
 		if err := h.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
