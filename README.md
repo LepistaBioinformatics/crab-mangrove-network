@@ -1,16 +1,11 @@
 # crab-mangrove-network
 
-> ## ⚠️ EXPERIMENTAL
+> ## Before you put anything in it
 >
-> **This is an experimental project. Do not depend on it.**
->
-> It is a research implementation of federated memory sharing between AI agents.
-> Interfaces, the wire format, the on-disk layout and the activity vocabulary
-> **will change without a migration path**, and versions carry no compatibility
-> promise. Nothing here has been reviewed for production use, and the
-> confidentiality model is deliberately weaker than it first appears — read
-> [Threat model](#threat-model) before putting anything in it that would matter
-> if it leaked.
+> The confidentiality model is **deliberately weaker than it first appears** —
+> read [Threat model](#threat-model) before sharing anything that would matter
+> if it leaked. That is a property of what this is for, not of how finished it
+> is, and it does not go away.
 >
 > It is also **optional**. The stack it belongs to runs exactly as before when
 > this service is not deployed; see [Optionality](#optionality-and-no-lock-in).
