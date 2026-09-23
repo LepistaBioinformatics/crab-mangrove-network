@@ -331,9 +331,17 @@ func TestOnlyTheHumanMayRevoke(t *testing.T) {
 	}
 }
 
-// A cross-scope publication waits on a role holder, and only a role holder may
-// decide it. A Reject is a normal result, not an error.
-func TestCrossScopePublicationIsPendingUntilAGoverningRoleDecides(t *testing.T) {
+// A GROUP PUBLICATION IS ACCEPTED AT SOURCE BY ITS LICENSED AUTHOR.
+//
+// The pending step exists so a role holder vets what travels to their scope.
+// Reaching the publish handler with a group in the audience MEANS the author
+// holds the licence for it -- the gate refuses everybody else -- so the vetting
+// already happened, by the same person, when they published. Asking them to then
+// approve their own post is ceremony that reads as a malfunction: the author
+// watches their publication reach nobody and has no reason to look in Pending.
+//
+// The Accept is EMITTED, not inferred, so the log still says who let it travel.
+func TestAGroupPublicationIsAcceptedAtSourceByItsAuthor(t *testing.T) {
 	s := newServer(t)
 
 	_, out := call(t, s, "/internal/v1/publish", map[string]any{
@@ -341,19 +349,47 @@ func TestCrossScopePublicationIsPendingUntilAGoverningRoleDecides(t *testing.T) 
 		"to":     []string{actor.SubscriptionGroupID("s1")},
 		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "5.8"},
 	}, true)
-	if out["pending"] != true {
-		t.Fatalf("a subscription-scope publish was not marked pending: %v", out)
+	if out["pending"] != false {
+		t.Fatalf("a licensed author's group publish was left pending: %v", out)
 	}
 	actID := out["activity"].(map[string]any)["id"].(string)
 
+	// The acceptance is in the log, by the author, naming the scope -- an
+	// inferred one would leave no record of who let it travel.
+	acts, err := s.Log.Read("t1", "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var accepted bool
+	for _, a := range acts {
+		if a.Type == activity.Accept && a.InReplyTo == actID {
+			accepted = true
+			if a.Actor != actor.PersonID("alice") {
+				t.Errorf("accepted by %s, want the author", a.Actor)
+			}
+			if a.Target != actor.SubscriptionGroupID("s1") {
+				t.Errorf("accept names %q, want the group", a.Target)
+			}
+		}
+	}
+	if !accepted {
+		t.Fatal("no acceptance was written; nothing records who let it travel")
+	}
+
+	// NOTHING IS WAITING ON ANYBODY. The point of accepting at source is that the
+	// decision has been made, so no role holder is left with a queue of their own
+	// colleagues' posts to rubber-stamp.
 	_, out = call(t, s, "/internal/v1/timeline", map[string]any{
 		"tuple": tup("bob"), "reading": "pending",
 	}, true)
-	if pend, _ := out["pending"].([]any); len(pend) != 1 {
-		t.Fatalf("want 1 pending decision, got %v", out)
+	if pend, _ := out["pending"].([]any); len(pend) != 0 {
+		t.Fatalf("a publication accepted at source is still queued for a decision: %v", out)
 	}
 
-	// Without a governing role, no decision.
+	// The decide route stays, and still refuses somebody with no governing role.
+	// Today nothing unlicensed can address a group at all, so nothing reaches
+	// that queue -- but the mechanism is what answers "somebody proposed this to
+	// my scope", and it must not rot while it is unused.
 	rec, _ := call(t, s, "/internal/v1/decide", map[string]any{
 		"tuple": tup("bob"), "as": "person", "activityId": actID, "accept": true,
 	}, true)
@@ -424,7 +460,7 @@ func TestHealthzNeedsNoToken(t *testing.T) {
 	}
 }
 
-// TestGroupPublicationReachesTheScopeOnceDecided is the arm nothing covered.
+// TestGroupPublicationReachesTheWholeScope is the arm nothing covered.
 //
 // Found by mutation while the visibility rule was being factored out: breaking
 // "reaches them through a group a governing role accepted" failed NOT ONE test,
@@ -432,7 +468,7 @@ func TestHealthzNeedsNoToken(t *testing.T) {
 // accept. They assert the DECISION; none asserted that the decision is what
 // makes the publication readable by the rest of the scope -- which is the whole
 // point of having one.
-func TestGroupPublicationReachesTheScopeOnceDecided(t *testing.T) {
+func TestGroupPublicationReachesTheWholeScope(t *testing.T) {
 	s := newServer(t)
 	s.Members = threeMembers{}
 
@@ -456,23 +492,12 @@ func TestGroupPublicationReachesTheScopeOnceDecided(t *testing.T) {
 		return len(claims)
 	}
 
-	// Before the decision it reaches nobody, which is what "pending" means.
-	if n := received("carol"); n != 0 {
-		t.Fatalf("a group publication reached the scope before any decision: %d claims", n)
-	}
-
-	rec, _ := call(t, s, "/internal/v1/decide", map[string]any{
-		"tuple": tup("bob"), "as": "person", "activityId": actID,
-		"accept": true, "governs": true,
-	}, true)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("decide: %d", rec.Code)
-	}
-
-	// After it, every member of the scope reads it -- carol was never named.
+	// It reaches the scope at once, because publishing to a group you govern IS
+	// the decision. carol was never named: the group is what carries it to her.
 	if n := received("carol"); n != 1 {
-		t.Fatalf("a decided group publication did not reach the scope: %d claims", n)
+		t.Fatalf("a group publication did not reach the scope: %d claims", n)
 	}
+	_ = actID
 	// And the author still does not see their own publication as received.
 	if n := received("alice"); n != 0 {
 		t.Fatalf("the author received their own publication: %d claims", n)
@@ -682,9 +707,12 @@ func TestARejectedGroupPublicationReachesNobody(t *testing.T) {
 		return len(c), len(p)
 	}
 
+	// Accepted at source, so it starts VISIBLE. That makes this the sharper
+	// version of the test: the reject has to take away something the scope can
+	// already read, rather than merely fail to grant it.
 	rejected := publishToGroup("rejected-thing")
-	if c, p := carolSees(); c != 0 || p != 1 {
-		t.Fatalf("before the decision: claims=%d pending=%d, want 0 and 1", c, p)
+	if c, p := carolSees(); c != 1 || p != 0 {
+		t.Fatalf("before the reject: claims=%d pending=%d, want 1 and 0", c, p)
 	}
 
 	decide(rejected, false)
@@ -696,11 +724,10 @@ func TestARejectedGroupPublicationReachesNobody(t *testing.T) {
 		t.Errorf("a decided publication is still pending: %d", p)
 	}
 
-	// And the other way still works, so the fix is not "nothing travels".
-	accepted := publishToGroup("accepted-thing")
-	decide(accepted, true)
+	// And a role holder can put it back, so the fix is not "a reject is final".
+	decide(rejected, true)
 	if c, _ := carolSees(); c != 1 {
-		t.Errorf("an ACCEPTED publication did not reach the scope: %d claims", c)
+		t.Errorf("a re-accepted publication did not reach the scope again: %d claims", c)
 	}
 }
 
