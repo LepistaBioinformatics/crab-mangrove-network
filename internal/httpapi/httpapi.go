@@ -192,6 +192,31 @@ func (s *Server) emit(t actor.Tuple, author *actor.Actor, a *activity.Activity) 
 	return s.Log.Append(t.TenantID, t.SubsAccID, *a, s.Actors)
 }
 
+// holdsCell reports whether this author currently has a live claim on the cell.
+//
+// The reduction answers it rather than a scan of the log, so this agrees with
+// what a reader is shown by construction: "live" means exactly what the timeline
+// means by it, including the ordering rule for a late arrival, and a second
+// implementation here is how the two would come to disagree about which write
+// won.
+//
+// FALSE ON ANY FAILURE. Not knowing makes this a publication, which is what
+// every write was before this existed -- the cost of being wrong is one card
+// reading "published" where "updated" was truer, and the cost of the other
+// default is refusing a publication over a label.
+func (s *Server) holdsCell(t actor.Tuple, author *actor.Actor, cell string) bool {
+	acts, err := s.Log.Read(t.TenantID, t.SubsAccID)
+	if err != nil {
+		return false
+	}
+	for _, c := range mangrovelog.Reduce(acts)[cell] {
+		if c.Author == author.ID {
+			return !c.Deleted
+		}
+	}
+	return false
+}
+
 // ---------------------------------------------------------------- publish
 
 type publishReq struct {
@@ -231,7 +256,22 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		req.Object.ID = newID("mangrove:obj:")
 	}
 
-	a := activity.Activity{Type: activity.Create, Object: &req.Object, To: req.To}
+	// CREATE OR UPDATE, decided HERE rather than by whoever reads the timeline.
+	//
+	// Writing a cell the author already holds is an update, and it is the one of
+	// the three verbs a reader cannot work out for itself: the activities a
+	// reader is given are filtered to what they may see, so counting an author's
+	// writes on the client makes the same card read "updated" to one member and
+	// "published" to another. The writer knows its own history in full.
+	//
+	// A LIVE claim, not any prior write. Republishing a cell the author revoked
+	// is a publication again -- there is nothing on anyone's screen for it to be
+	// an update OF, which is the only sense of the word that helps a reader.
+	kind := activity.Create
+	if s.holdsCell(req.Tuple, author, req.Object.Cell) {
+		kind = activity.Update
+	}
+	a := activity.Activity{Type: kind, Object: &req.Object, To: req.To}
 	if err := s.emit(req.Tuple, author, &a); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

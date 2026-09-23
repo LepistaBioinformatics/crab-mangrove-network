@@ -107,6 +107,37 @@ func TestOnlySomebodyTheFileReachedMayFetchIt(t *testing.T) {
 	}
 }
 
+// THE BLOB GATE IS THE SAME GATE, which is why sharing a FILE into a group was
+// broken in the same way and by the same line: `reachable` calls `reach`, so a
+// member could see neither the card nor the bytes behind it. Asserted here as
+// well as on the timeline, because "one rule, one implementation" is the reason
+// `visibility.go` exists and a second copy of it would drift silently.
+func TestAFileSharedIntoAGroupCanBeFetchedByTheScope(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+	digest := upload(t, s, "soil data\n")
+	// Addressed to nobody: the share is the only thing that can reach anyone.
+	objID := publishFile(t, s, "alice", "soil-2026", digest, "soil.csv", nil)
+
+	if rec := fetchBlob(t, s, "carol", digest); rec.Code != http.StatusNotFound {
+		t.Fatalf("carol reached the bytes before the share: %d", rec.Code)
+	}
+
+	rec, _ := call(t, s, "/internal/v1/share", map[string]any{
+		"tuple": tup("alice"), "as": "person", "groupsLicensed": true,
+		"objectId": objID, "target": actor.SubscriptionGroupID("s1"),
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("share to group: %d %s", rec.Code, rec.Body.String())
+	}
+
+	for _, who := range []string{"bob", "carol"} {
+		if rec := fetchBlob(t, s, who, digest); rec.Code != http.StatusOK {
+			t.Errorf("%s cannot fetch a file shared with their subscription: %d", who, rec.Code)
+		}
+	}
+}
+
 // Holding the bytes is not the same as being allowed to read them. An upload
 // that was never published reaches nobody -- including the uploader, who has to
 // name it in a post like everybody else.

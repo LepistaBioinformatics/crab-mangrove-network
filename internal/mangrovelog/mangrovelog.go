@@ -183,6 +183,36 @@ type Claim struct {
 	// Audience is the addressing of the winning activity, so a reader can see
 	// how far this claim travelled.
 	Audience []string `json:"audience"`
+	// Action is the winning activity's verb, in the vocabulary a reader speaks:
+	// "published", "updated" or "revoked".
+	//
+	// SAID HERE AND NOT DERIVED BY THE READER, and that is the whole reason it
+	// exists. A client could count an author's writes on a cell -- but the
+	// activities it is given are filtered to what that reader may see, so one
+	// member would count two and another one, and the same card would read
+	// "updated" to the first and "published" to the second. The log knows, once.
+	//
+	// `Deleted` is not replaced by it. A reader that predates this field still
+	// has the tombstone, which is the only one of the three that changes what a
+	// card may be used for.
+	Action string `json:"action"`
+}
+
+// verb names an activity in the vocabulary a reader speaks.
+//
+// Anything that is not an Update or a Delete reads as a publication, including
+// the activity types this reduction does not fold: a claim exists because
+// SOMETHING wrote it, and "published" is the truthful default for a write whose
+// verb we have no better word for.
+func verb(t activity.Type) string {
+	switch t {
+	case activity.Update:
+		return "updated"
+	case activity.Delete:
+		return "revoked"
+	default:
+		return "published"
+	}
 }
 
 // audienceWith is who a claim reaches: where it was published, plus wherever it
@@ -277,6 +307,7 @@ func Reduce(acts []activity.Activity) map[string][]Claim {
 			Author:    k.author,
 			Published: a.Published,
 			Deleted:   a.Type == activity.Delete,
+			Action:    verb(a.Type),
 			Evidence:  len(endorsed[a.Object.ID]),
 			Audience:  audienceWith(a, shared[a.Object.ID]),
 		}
