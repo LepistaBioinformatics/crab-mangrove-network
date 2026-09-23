@@ -371,7 +371,18 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"activity": a, "pending": !req.Undo})
+	// NOT PENDING. This said `!req.Undo` -- every share reported itself as
+	// waiting on a decision, and the interface told the member "it reaches the
+	// group when whoever governs it accepts". Nothing was waiting: there is no
+	// pending mechanism for an Add at all, and the pending reading skips it for
+	// want of an object, so the sentence pointed at a queue that could never
+	// hold it.
+	//
+	// Nor should there be one. Reaching this line MEANS the caller holds the
+	// licence for what they addressed -- the gate refuses everybody else -- so
+	// the vetting a decision exists to obtain has already happened, which is the
+	// same argument that accepts a group publication at source.
+	writeJSON(w, http.StatusOK, map[string]any{"activity": a, "pending": false})
 }
 
 // ---------------------------------------------------------------- react

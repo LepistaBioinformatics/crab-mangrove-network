@@ -774,3 +774,137 @@ func TestTheLastGovernanceDecisionWins(t *testing.T) {
 		})
 	}
 }
+
+// TestASharedObjectReachesThePersonItWasSharedWith pins a feature that never
+// worked, for agents or for members.
+//
+// A share is an Add: it carries no object of its own, only the id it widens and
+// the new addressee. `Reduce` handled Create, Update, Delete, Like and Undo, and
+// every reading skips an activity with no object -- so the Add was written to
+// the log and then read by nothing. The reduction went on describing the
+// audience the Create had, which is why a member could share a memory four times
+// and watch the recipient see nothing.
+func TestASharedObjectReachesThePersonItWasSharedWith(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+
+	// Published PRIVATELY: nobody but the author can see it.
+	_, out := call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple": tup("alice"), "as": "person",
+		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "6.4"},
+	}, true)
+	objID := out["activity"].(map[string]any)["object"].(map[string]any)["id"].(string)
+
+	sees := func(who string) (claims, held int) {
+		t.Helper()
+		_, out := call(t, s, "/internal/v1/timeline", map[string]any{
+			"tuple": tup(who), "reading": "received",
+		}, true)
+		c, _ := out["claims"].([]any)
+		h, _ := out["held"].([]any)
+		return len(c), len(h)
+	}
+
+	if c, h := sees("bob"); c != 0 || h != 0 {
+		t.Fatalf("a private publication reached bob: claims=%d held=%d", c, h)
+	}
+
+	rec, out := call(t, s, "/internal/v1/share", map[string]any{
+		"tuple": tup("alice"), "as": "person",
+		"objectId": objID, "target": actor.ServiceID("bob"),
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("share: %d %s", rec.Code, rec.Body.String())
+	}
+	// AND IT DOES NOT CLAIM TO BE WAITING ON ANYBODY. It said `pending: true`
+	// for every share, so the interface told the member their memory would reach
+	// the group once somebody accepted it -- pointing at a queue that could never
+	// hold an Add.
+	if out["pending"] != false {
+		t.Errorf("a share reported itself pending: %v", out["pending"])
+	}
+
+	if c, h := sees("bob"); c+h != 1 {
+		t.Fatalf("the share reached nobody: bob sees claims=%d held=%d", c, h)
+	}
+	// carol was never named, by the Create or by the share.
+	if c, h := sees("carol"); c != 0 || h != 0 {
+		t.Errorf("the share reached somebody it did not name: carol claims=%d held=%d", c, h)
+	}
+}
+
+// Sharing into a group widens it to the whole scope, and the audience the
+// timeline reports says so -- a member has to be able to see where their memory
+// went.
+func TestSharingIntoAGroupWidensTheAudienceItReports(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+
+	_, out := call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple": tup("alice"), "as": "person",
+		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "6.4"},
+	}, true)
+	objID := out["activity"].(map[string]any)["object"].(map[string]any)["id"].(string)
+
+	rec, _ := call(t, s, "/internal/v1/share", map[string]any{
+		"tuple": tup("alice"), "as": "person", "groupsLicensed": true,
+		"objectId": objID, "target": actor.SubscriptionGroupID("s1"),
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("share to group: %d %s", rec.Code, rec.Body.String())
+	}
+
+	_, out = call(t, s, "/internal/v1/timeline", map[string]any{
+		"tuple": tup("alice"), "reading": "published",
+	}, true)
+	claims, _ := out["claims"].([]any)
+	if len(claims) != 1 {
+		t.Fatalf("author sees %d claims", len(claims))
+	}
+	aud, _ := claims[0].(map[string]any)["audience"].([]any)
+	var found bool
+	for _, a := range aud {
+		if a == actor.SubscriptionGroupID("s1") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the claim does not say where the share sent it: %v", aud)
+	}
+}
+
+// A Remove takes back what an Add granted. Without this a member could unshare
+// and the recipient would go on reading it.
+func TestUnsharingTakesItBack(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+
+	_, out := call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple": tup("alice"), "as": "person",
+		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "6.4"},
+	}, true)
+	objID := out["activity"].(map[string]any)["object"].(map[string]any)["id"].(string)
+
+	bobSees := func() int {
+		t.Helper()
+		_, out := call(t, s, "/internal/v1/timeline", map[string]any{
+			"tuple": tup("bob"), "reading": "received",
+		}, true)
+		c, _ := out["claims"].([]any)
+		h, _ := out["held"].([]any)
+		return len(c) + len(h)
+	}
+
+	for _, undo := range []bool{false, true} {
+		rec, _ := call(t, s, "/internal/v1/share", map[string]any{
+			"tuple": tup("alice"), "as": "person",
+			"objectId": objID, "target": actor.ServiceID("bob"), "undo": undo,
+		}, true)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("share(undo=%v): %d", undo, rec.Code)
+		}
+	}
+	if n := bobSees(); n != 0 {
+		t.Errorf("bob still reads a memory that was unshared: %d", n)
+	}
+}

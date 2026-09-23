@@ -185,6 +185,30 @@ type Claim struct {
 	Audience []string `json:"audience"`
 }
 
+// audienceWith is who a claim reaches: where it was published, plus wherever it
+// has been shared since, less whatever a Remove took back.
+//
+// The added names are sorted, so two readers of one log render the same page --
+// the same reason Reduce sorts its claims at the bottom.
+func audienceWith(a activity.Activity, shares map[string]bool) []string {
+	out := a.Audience()
+	if len(shares) == 0 {
+		return out
+	}
+	have := make(map[string]bool, len(out))
+	for _, addr := range out {
+		have[addr] = true
+	}
+	added := make([]string, 0, len(shares))
+	for addr, on := range shares {
+		if on && !have[addr] {
+			added = append(added, addr)
+		}
+	}
+	sort.Strings(added)
+	return append(out, added...)
+}
+
 // Reduce folds a log into claims, keyed by cell and then by author.
 //
 // The two-level map IS the guarantee. There is no code path that lets one
@@ -195,6 +219,9 @@ func Reduce(acts []activity.Activity) map[string][]Claim {
 	// Endorsements are counted per (object id, endorsing actor) so that one
 	// actor liking the same object twice still weighs one.
 	endorsed := map[string]map[string]bool{}
+	// Addressees a share ADDED after publication, per object id, and whether
+	// they are still on it.
+	shared := map[string]map[string]bool{}
 
 	for _, a := range acts {
 		switch a.Type {
@@ -214,6 +241,23 @@ func Reduce(acts []activity.Activity) map[string][]Claim {
 				endorsed[a.InReplyTo] = map[string]bool{}
 			}
 			endorsed[a.InReplyTo][a.Actor] = true
+		case activity.Add, activity.Remove:
+			// A SHARE WIDENS AN OBJECT THAT ALREADY EXISTS. It carries no object
+			// of its own -- only the id in InReplyTo and the new addressee -- so
+			// this loop used to skip it entirely and a shared memory reached
+			// nobody: the reduction went on describing the audience the Create
+			// had, and every reader asked the reduction.
+			//
+			// Remove withdraws what Add granted. Last one wins, because a member
+			// may share and unshare the same person more than once.
+			if a.InReplyTo == "" || a.Target == "" {
+				continue
+			}
+			if shared[a.InReplyTo] == nil {
+				shared[a.InReplyTo] = map[string]bool{}
+			}
+			shared[a.InReplyTo][a.Target] = a.Type == activity.Add
+
 		case activity.Undo:
 			// ONLY an Undo that says it withdraws a Like touches the evidence
 			// count. Undoing a Read receipt must not silently remove an
@@ -234,7 +278,7 @@ func Reduce(acts []activity.Activity) map[string][]Claim {
 			Published: a.Published,
 			Deleted:   a.Type == activity.Delete,
 			Evidence:  len(endorsed[a.Object.ID]),
-			Audience:  a.Audience(),
+			Audience:  audienceWith(a, shared[a.Object.ID]),
 		}
 		if a.Object != nil {
 			c.Object = *a.Object
