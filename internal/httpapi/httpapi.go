@@ -236,9 +236,46 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// ACCEPTED AT SOURCE, when the author is the one who would have to approve it.
+	//
+	// The pending step exists so a role holder vets what travels to their scope.
+	// Reaching this line with a group in the audience MEANS the author holds the
+	// licence for that group -- the gate above refuses everybody else -- so the
+	// vetting has already happened, by the same person, at the moment they
+	// published. Asking them to then approve their own post is ceremony that
+	// reads as a malfunction: the author watches their publication reach nobody
+	// and has no reason to look in a tab called Pending.
+	//
+	// The Accept is EMITTED rather than inferred, so the log still shows who let
+	// it travel and when. Nothing downstream learns a special case: the reduction,
+	// the pending reading and the reach gate all go on reading decisions the only
+	// way they ever did.
+	//
+	// The decide route and the pending reading stay. Today no unlicensed caller
+	// can address a group at all (AD-030), so nothing else can reach them -- but
+	// they are the mechanism that answers "somebody proposed this to my scope",
+	// and deleting a correct answer because the current rules never ask the
+	// question is how it gets rebuilt worse later.
+	pending := false
+	if needsDecision(a) {
+		accept := activity.Activity{
+			Type: activity.Accept, InReplyTo: a.ID, Target: scopeOf(a),
+		}
+		if err := s.emit(req.Tuple, author, &accept); err != nil {
+			// The publication is already in the log. Saying it is pending is the
+			// honest answer: it exists and has not been accepted, which is
+			// exactly the state a role holder can still resolve by hand.
+			if s.Logger != nil {
+				s.Logger.Error("accept at source failed", "activity", a.ID, "err", err)
+			}
+			pending = true
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"activity": a,
-		"pending":  needsDecision(a),
+		"pending":  pending,
 	})
 }
 
