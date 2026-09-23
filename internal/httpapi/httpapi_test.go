@@ -191,6 +191,40 @@ func TestShareRefusesAnOutOfReachTarget(t *testing.T) {
 	}
 }
 
+// THE GATE A SHARE INTO A GROUP RESTS ON.
+//
+// `viewer.reach` grants a shared group its audience with NO governance decision,
+// on the grounds that the Add already passed `reach.Check` -- so an unlicensed
+// caller reaching a group HERE would be reaching every member of it with nothing
+// in the way. Asserted for both groups and for the member's own subscription,
+// which is the one an agent belongs to and still may not address.
+func TestShareRefusesAGroupWithoutTheLicenceForIt(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		target   string
+		licences map[string]any
+	}{
+		{"own subscription, unlicensed", actor.SubscriptionGroupID("s1"), map[string]any{}},
+		{"the tenant, unlicensed", actor.TenantGroupID("t1"), map[string]any{}},
+		{"the tenant, with only the group licence", actor.TenantGroupID("t1"), map[string]any{"groupsLicensed": true}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newServer(t)
+			body := map[string]any{
+				"tuple": tup("alice"), "as": "person",
+				"objectId": "mangrove:obj:1", "target": c.target,
+			}
+			for k, v := range c.licences {
+				body[k] = v
+			}
+			rec, _ := call(t, s, "/internal/v1/share", body, true)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("share reached %s: %d %s", c.target, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 // TestAdmitRequiredBeforeIngest is FR-B7. An object addressed at somebody is
 // visible to that HUMAN, and does not enter their AGENT's memory until the
 // human admits it. Without this, steering a colleague's agent is one share
@@ -870,6 +904,153 @@ func TestSharingIntoAGroupWidensTheAudienceItReports(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("the claim does not say where the share sent it: %v", aud)
+	}
+}
+
+// THE TWO ACTORS ARE ONE MEMBER WHEN READING, AND TWO ONLY WHEN WRITING.
+//
+// A member has a person actor and a service actor, and the split is real: the
+// agent publishes as itself, and `as` picks which one signs. It is NOT real on
+// the way in. Whoever owns the bot reads everything either of their actors was
+// addressed with, from one timeline -- there is no second inbox to check, and
+// `handleTimeline` does not look at `as` at all.
+//
+// Asserted from BOTH sides, and with `as` set differently on otherwise identical
+// requests, because "the reader's actor does not change the answer" is the claim
+// and a single reading would not make it.
+func TestAMemberReadsWhatEitherOfTheirActorsWasAddressed(t *testing.T) {
+	s := newServer(t)
+
+	for _, to := range []string{actor.PersonID("bob"), actor.ServiceID("bob")} {
+		rec, _ := call(t, s, "/internal/v1/publish", map[string]any{
+			"tuple": tup("alice"), "as": "person", "to": []string{to},
+			"object": map[string]any{"type": "MemoryNote", "cell": "for-" + to, "content": "6.4"},
+		}, true)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("publish to %s: %d %s", to, rec.Code, rec.Body.String())
+		}
+	}
+
+	for _, as := range []string{"person", "service"} {
+		_, out := call(t, s, "/internal/v1/timeline", map[string]any{
+			"tuple": tup("bob"), "as": as, "reading": "received",
+		}, true)
+		held, _ := out["held"].([]any)
+		if len(held) != 2 {
+			t.Errorf("reading as %s, bob holds %d of the 2 things addressed to his two actors", as, len(held))
+		}
+	}
+}
+
+// THE AUDIENCE SAYING SO IS NOT THE SAME AS SOMEBODY SEEING IT, and the test
+// above asserts only the first. Shipped, that gap was total: a member sharing
+// something with their subscription or their tenant reached NOBODY, while
+// sharing the same object with a person worked -- because the reach gate asked
+// a group route for an accepted governance decision, and no code path emits one
+// for a share. The Add was in the log, the reduction reported the wider
+// audience, and the timeline dropped it one layer later.
+func TestSharingIntoAGroupReachesTheWholeScope(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+
+	// Published to nobody: the object exists and reaches only its author, so the
+	// share is the ONLY thing that can put it in front of anybody.
+	_, out := call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple": tup("alice"), "as": "person",
+		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "6.4"},
+	}, true)
+	objID := out["activity"].(map[string]any)["object"].(map[string]any)["id"].(string)
+
+	sees := func(who string) int {
+		t.Helper()
+		_, out := call(t, s, "/internal/v1/timeline", map[string]any{
+			"tuple": tup(who), "reading": "received",
+		}, true)
+		claims, _ := out["claims"].([]any)
+		return len(claims)
+	}
+	if n := sees("bob"); n != 0 {
+		t.Fatalf("before the share bob already sees %d -- the test asserts nothing", n)
+	}
+
+	rec, _ := call(t, s, "/internal/v1/share", map[string]any{
+		"tuple": tup("alice"), "as": "person", "groupsLicensed": true,
+		"objectId": objID, "target": actor.SubscriptionGroupID("s1"),
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("share to group: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// EVERY member of the scope, not merely one: a group is the whole set, and
+	// carol is in it without ever having been named.
+	for _, who := range []string{"bob", "carol"} {
+		if n := sees(who); n != 1 {
+			t.Errorf("%s sees %d claims after it was shared with their subscription", who, n)
+		}
+	}
+
+	// AND NOTHING IS WAITING ON ANYBODY. `needsDecision` reads the audience, and an
+	// Add's own `to` IS the group -- so it answers true for one. The pending reading
+	// skips it only because an Add carries no object, which is an accident of shape
+	// rather than a decision. A role holder watching a queue fill with entries they
+	// cannot act on is the failure this pins.
+	_, out = call(t, s, "/internal/v1/timeline", map[string]any{
+		"tuple": tup("alice"), "reading": "pending",
+	}, true)
+	if q, _ := out["pending"].([]any); len(q) != 0 {
+		t.Errorf("sharing queued %d decisions that nobody can take", len(q))
+	}
+}
+
+// A share is not a way to overturn a decision. A governance Reject names the
+// ACTIVITY it refused, so an Accept raised on behalf of a share would land on
+// that same activity and undo it -- which is why the gate reads the ROUTE
+// rather than having `handleShare` emit an acceptance.
+func TestSharingDoesNotRevivePublicationTheScopeRejected(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+
+	_, out := call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple": tup("alice"), "as": "person", "groupsLicensed": true,
+		"to":     []string{actor.SubscriptionGroupID("s1")},
+		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "6.4"},
+	}, true)
+	act := out["activity"].(map[string]any)
+	actID := act["id"].(string)
+	objID := act["object"].(map[string]any)["id"].(string)
+
+	// Whoever governs the scope turns it down, after it was accepted at source.
+	rec, _ := call(t, s, "/internal/v1/decide", map[string]any{
+		"tuple": tup("alice"), "as": "person", "governs": true,
+		"activityId": actID, "accept": false,
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("decide: %d %s", rec.Code, rec.Body.String())
+	}
+
+	sees := func() int {
+		t.Helper()
+		_, out := call(t, s, "/internal/v1/timeline", map[string]any{
+			"tuple": tup("bob"), "reading": "received",
+		}, true)
+		claims, _ := out["claims"].([]any)
+		return len(claims)
+	}
+	if n := sees(); n != 0 {
+		t.Fatalf("a rejected publication reaches bob: %d", n)
+	}
+
+	// Sharing it with a DIFFERENT person is ordinary and must still work; what it
+	// must not do is put the rejected publication back in front of the scope.
+	rec, _ = call(t, s, "/internal/v1/share", map[string]any{
+		"tuple": tup("alice"), "as": "person",
+		"objectId": objID, "target": actor.PersonID("carol"),
+	}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("share to a person: %d %s", rec.Code, rec.Body.String())
+	}
+	if n := sees(); n != 0 {
+		t.Errorf("bob sees %d after a share to somebody else revived a rejected publication", n)
 	}
 }
 

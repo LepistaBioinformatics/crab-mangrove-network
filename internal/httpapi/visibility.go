@@ -87,40 +87,79 @@ func sharedAddressees(acts []activity.Activity) map[string]map[string]bool {
 	return out
 }
 
-// audienceOf is where an activity was addressed PLUS wherever it has been shared
-// since. Two sources, one answer, so no caller has to remember the second.
-func (v viewer) audienceOf(a activity.Activity) []string {
-	out := a.Audience()
-	if a.Object == nil {
-		return out
-	}
-	for addr, on := range v.shared[a.Object.ID] {
-		if on {
-			out = append(out, addr)
+// addressing is who an activity reaches, and BY WHICH OF THE TWO ROUTES. The
+// routes are not interchangeable, which is why this is not one list of strings.
+type addressing struct {
+	// direct: this member, as either of their two actors -- whether the
+	// activity said so itself or a later share added them.
+	direct bool
+	// ownGroup: a group in the activity's OWN `to`. A publication crossing into
+	// a scope, which waits on whoever governs that scope.
+	ownGroup bool
+	// sharedGroup: a group a later Add put it in front of. Already vetted, by
+	// the gate that let the Add through -- see `reach`.
+	sharedGroup bool
+}
+
+// addressingOf reads both sources: where an activity was addressed, and
+// wherever it has been shared since. One answer, so no caller has to remember
+// the second -- and two fields, so no caller can forget they differ.
+func (v viewer) addressingOf(a activity.Activity) addressing {
+	var at addressing
+	for _, addr := range a.Audience() {
+		if addr == v.me || addr == v.mine {
+			at.direct = true
+		}
+		if strings.HasPrefix(addr, "mangrove:group:") {
+			at.ownGroup = true
 		}
 	}
-	return out
+	if a.Object == nil {
+		return at
+	}
+	for addr, on := range v.shared[a.Object.ID] {
+		if !on {
+			continue
+		}
+		if addr == v.me || addr == v.mine {
+			at.direct = true
+		}
+		if strings.HasPrefix(addr, "mangrove:group:") {
+			at.sharedGroup = true
+		}
+	}
+	return at
 }
 
 func (v viewer) reach(a activity.Activity) reachOf {
 	if a.Actor == v.me || a.Actor == v.mine {
 		return reachOwn
 	}
-	direct := false
-	viaGroup := false
-	for _, addr := range v.audienceOf(a) {
-		if addr == v.me || addr == v.mine {
-			direct = true
-		}
-		if strings.HasPrefix(addr, "mangrove:group:") {
-			viaGroup = true
-		}
-	}
-	// Reaching somebody through a group takes an ACCEPTED decision, not merely a
-	// decision. Reading this as "was decided" is what let a Reject publish to the
-	// whole scope.
+	at := v.addressingOf(a)
+	// Reaching somebody through a group the activity ADDRESSED takes an ACCEPTED
+	// decision, not merely a decision. Reading this as "was decided" is what let a
+	// Reject publish to the whole scope.
 	accepted, decided := v.governed[a.ID]
-	if !direct && !(viaGroup && decided && accepted) {
+	//
+	// A GROUP REACHED BY A SHARE NEEDS NO SECOND DECISION, and requiring one is
+	// the defect this distinction exists to fix. `handleShare` runs the same
+	// `reach.Check` a publication does, so an Add naming a group MEANS its author
+	// held the licence for that group -- the vetting a decision exists to obtain
+	// has already happened, by the same person, at the moment they shared. It is
+	// the identical argument `handlePublish` makes when it accepts at source.
+	//
+	// The symptom was exact and total: sharing something with a subscription or a
+	// tenant reached NOBODY, while sharing the same thing with a person worked,
+	// because only the group route asked for a decision no code path emits. The
+	// Add was written, the audience widened, the reduction reported it -- and this
+	// gate dropped it on the floor one layer later.
+	//
+	// AND THE FIX IS NOT TO EMIT AN ACCEPT FROM `handleShare`. A governance
+	// decision names the ACTIVITY it decides, so an Accept raised by a share would
+	// land on the original Create -- reversing any Reject already recorded against
+	// it, and letting a share of a rejected publication publish it after all. The
+	// route is what differs, so the route is what the gate reads.
+	if !at.direct && !at.sharedGroup && !(at.ownGroup && decided && accepted) {
 		return reachNone
 	}
 
@@ -134,7 +173,7 @@ func (v viewer) reach(a activity.Activity) reachOf {
 		return reachVisible
 	}
 
-	if direct && !v.admittedByMe(a.ID) {
+	if at.direct && !v.admittedByMe(a.ID) {
 		return reachHeld
 	}
 	return reachVisible
