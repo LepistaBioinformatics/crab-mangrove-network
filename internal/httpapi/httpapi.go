@@ -671,7 +671,8 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		// data question only.
 		var out []pendingDecision
 		for _, a := range acts {
-			if !needsDecision(a) || governed[a.ID] || a.Object == nil {
+			_, decided := governed[a.ID]
+			if !needsDecision(a) || decided || a.Object == nil {
 				continue
 			}
 			scope := scopeOf(a)
@@ -763,15 +764,28 @@ func admissions(acts []activity.Activity) map[string]map[string]bool {
 	return out
 }
 
+// governanceDecisions maps a group publication to HOW it was decided: present in
+// the map means decided at all, and the value says whether it was accepted.
+//
+// TWO QUESTIONS, AND THEY ARE NOT THE SAME ONE. "Has a role holder dealt with
+// this?" decides whether it still belongs in the pending list; "may the scope
+// read it?" decides whether it travels. A single boolean meaning "decided"
+// answered both, so a REJECT published the thing to the entire scope -- the
+// exact opposite of what rejecting it means, and the decision that looked most
+// like it had worked.
+//
+// The last decision wins, because iteration follows log order. A role holder
+// changing their mind is a normal thing for them to do.
 func governanceDecisions(acts []activity.Activity) map[string]bool {
 	out := map[string]bool{}
 	for _, a := range acts {
 		if a.Type != activity.Accept && a.Type != activity.Reject {
 			continue
 		}
-		if a.InReplyTo != "" && strings.HasPrefix(a.Target, "mangrove:group:") {
-			out[a.InReplyTo] = true
+		if a.InReplyTo == "" || !strings.HasPrefix(a.Target, "mangrove:group:") {
+			continue
 		}
+		out[a.InReplyTo] = a.Type == activity.Accept
 	}
 	return out
 }

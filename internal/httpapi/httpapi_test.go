@@ -636,3 +636,114 @@ func TestRevokingSomethingStillHeldWithdrawsItEntirely(t *testing.T) {
 		t.Errorf("a recalled item is still offered for admission: %d held", h)
 	}
 }
+
+// TestARejectedGroupPublicationReachesNobody pins a defect that shipped and that
+// looked, from the deciding member's side, exactly like it had worked.
+//
+// One boolean answered two different questions: "has a role holder dealt with
+// this?", which decides whether it stays in the pending list, and "may the scope
+// read it?", which decides whether it travels. Both were set by a Reject as well
+// as an Accept, so REJECTING A PUBLICATION PUBLISHED IT TO THE ENTIRE SCOPE. It
+// also left the pending list at the same moment, so the only visible evidence
+// agreed with the decision the member thought they had made.
+func TestARejectedGroupPublicationReachesNobody(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+
+	publishToGroup := func(cell string) string {
+		t.Helper()
+		_, out := call(t, s, "/internal/v1/publish", map[string]any{
+			"tuple": tup("alice"), "as": "person", "groupsLicensed": true,
+			"to":     []string{actor.SubscriptionGroupID("s1")},
+			"object": map[string]any{"type": "MemoryNote", "cell": cell, "content": "x"},
+		}, true)
+		return out["activity"].(map[string]any)["id"].(string)
+	}
+	decide := func(activityID string, accept bool) {
+		t.Helper()
+		rec, _ := call(t, s, "/internal/v1/decide", map[string]any{
+			"tuple": tup("bob"), "as": "person", "activityId": activityID,
+			"accept": accept, "governs": true,
+		}, true)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("decide(%v): %d", accept, rec.Code)
+		}
+	}
+	carolSees := func() (claims, pending int) {
+		t.Helper()
+		_, out := call(t, s, "/internal/v1/timeline", map[string]any{
+			"tuple": tup("carol"), "reading": "received",
+		}, true)
+		c, _ := out["claims"].([]any)
+		_, out = call(t, s, "/internal/v1/timeline", map[string]any{
+			"tuple": tup("carol"), "reading": "pending",
+		}, true)
+		p, _ := out["pending"].([]any)
+		return len(c), len(p)
+	}
+
+	rejected := publishToGroup("rejected-thing")
+	if c, p := carolSees(); c != 0 || p != 1 {
+		t.Fatalf("before the decision: claims=%d pending=%d, want 0 and 1", c, p)
+	}
+
+	decide(rejected, false)
+	c, p := carolSees()
+	if c != 0 {
+		t.Errorf("a REJECTED publication reached the scope: %d claims", c)
+	}
+	if p != 0 {
+		t.Errorf("a decided publication is still pending: %d", p)
+	}
+
+	// And the other way still works, so the fix is not "nothing travels".
+	accepted := publishToGroup("accepted-thing")
+	decide(accepted, true)
+	if c, _ := carolSees(); c != 1 {
+		t.Errorf("an ACCEPTED publication did not reach the scope: %d claims", c)
+	}
+}
+
+// A role holder may change their mind, and the last decision is the one that
+// counts. Without this, "reject then accept" and "accept then reject" would both
+// depend on which happened to be seen last by an unordered read.
+func TestTheLastGovernanceDecisionWins(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		first bool
+		then  bool
+		want  int
+	}{
+		{"reject then accept", false, true, 1},
+		{"accept then reject", true, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newServer(t)
+			s.Members = threeMembers{}
+			_, out := call(t, s, "/internal/v1/publish", map[string]any{
+				"tuple": tup("alice"), "as": "person", "groupsLicensed": true,
+				"to":     []string{actor.SubscriptionGroupID("s1")},
+				"object": map[string]any{"type": "MemoryNote", "cell": "c", "content": "x"},
+			}, true)
+			id := out["activity"].(map[string]any)["id"].(string)
+
+			for _, accept := range []bool{tc.first, tc.then} {
+				rec, _ := call(t, s, "/internal/v1/decide", map[string]any{
+					"tuple": tup("bob"), "as": "person", "activityId": id,
+					"accept": accept, "governs": true,
+				}, true)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("decide: %d", rec.Code)
+				}
+			}
+
+			_, out = call(t, s, "/internal/v1/timeline", map[string]any{
+				"tuple": tup("carol"), "reading": "received",
+			}, true)
+			claims, _ := out["claims"].([]any)
+			if len(claims) != tc.want {
+				t.Errorf("claims = %d, want %d", len(claims), tc.want)
+			}
+		})
+	}
+}
