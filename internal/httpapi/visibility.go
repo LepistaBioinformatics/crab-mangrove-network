@@ -43,6 +43,12 @@ type viewer struct {
 	me, mine string
 	admitted map[string]map[string]bool
 	governed map[string]bool
+	// shared is who a SHARE added to an object after it was published, per
+	// object id. An Add carries no object of its own -- only the id it widens
+	// and the new addressee -- so an activity's own `to` is not the whole
+	// audience, and reading it as though it were is what made a share reach
+	// nobody.
+	shared map[string]map[string]bool
 }
 
 func newViewer(t actor.Tuple, acts []activity.Activity) viewer {
@@ -51,6 +57,7 @@ func newViewer(t actor.Tuple, acts []activity.Activity) viewer {
 		mine:     actor.ServiceID(t.UserAccID),
 		admitted: admissions(acts),
 		governed: governanceDecisions(acts),
+		shared:   sharedAddressees(acts),
 	}
 }
 
@@ -60,13 +67,48 @@ func (v viewer) admittedByMe(activityID string) bool {
 	return v.admitted[activityID][v.me] || v.admitted[activityID][v.mine]
 }
 
+// sharedAddressees collects what each Add granted and each Remove took back,
+// per object id. Last one wins: a member may share and unshare the same person
+// more than once.
+func sharedAddressees(acts []activity.Activity) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for _, a := range acts {
+		if a.Type != activity.Add && a.Type != activity.Remove {
+			continue
+		}
+		if a.InReplyTo == "" || a.Target == "" {
+			continue
+		}
+		if out[a.InReplyTo] == nil {
+			out[a.InReplyTo] = map[string]bool{}
+		}
+		out[a.InReplyTo][a.Target] = a.Type == activity.Add
+	}
+	return out
+}
+
+// audienceOf is where an activity was addressed PLUS wherever it has been shared
+// since. Two sources, one answer, so no caller has to remember the second.
+func (v viewer) audienceOf(a activity.Activity) []string {
+	out := a.Audience()
+	if a.Object == nil {
+		return out
+	}
+	for addr, on := range v.shared[a.Object.ID] {
+		if on {
+			out = append(out, addr)
+		}
+	}
+	return out
+}
+
 func (v viewer) reach(a activity.Activity) reachOf {
 	if a.Actor == v.me || a.Actor == v.mine {
 		return reachOwn
 	}
 	direct := false
 	viaGroup := false
-	for _, addr := range a.Audience() {
+	for _, addr := range v.audienceOf(a) {
 		if addr == v.me || addr == v.mine {
 			direct = true
 		}
