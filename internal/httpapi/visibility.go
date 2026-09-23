@@ -74,7 +74,11 @@ func (v viewer) reach(a activity.Activity) reachOf {
 			viaGroup = true
 		}
 	}
-	if !direct && !(viaGroup && v.governed[a.ID]) {
+	// Reaching somebody through a group takes an ACCEPTED decision, not merely a
+	// decision. Reading this as "was decided" is what let a Reject publish to the
+	// whole scope.
+	accepted, decided := v.governed[a.ID]
+	if !direct && !(viaGroup && decided && accepted) {
 		return reachNone
 	}
 
