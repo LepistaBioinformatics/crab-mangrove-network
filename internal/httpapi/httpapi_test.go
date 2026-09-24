@@ -225,11 +225,20 @@ func TestShareRefusesAGroupWithoutTheLicenceForIt(t *testing.T) {
 	}
 }
 
-// TestAdmitRequiredBeforeIngest is FR-B7. An object addressed at somebody is
-// visible to that HUMAN, and does not enter their AGENT's memory until the
-// human admits it. Without this, steering a colleague's agent is one share
-// away.
-func TestAdmitRequiredBeforeIngest(t *testing.T) {
+// WHAT FR-B7 CLAIMED, AND WHAT IT DID.
+//
+// It held anything addressed directly at a member until they admitted it, on
+// the grounds that otherwise steering a colleague's agent was one share away.
+// It never held that: the held item went out WITH ITS OBJECT, the viewer is
+// built from the tuple and not from the calling actor, so `mangrove_timeline`
+// handed an agent the same bytes it handed the person -- and the tool's
+// description said so. The agent also had an admit of its own.
+//
+// So the hold is gone and this asserts the shape that replaced it: addressed
+// means readable, and whether you have OPENED it is a receipt on the claim.
+// The property FR-B7 wanted is AD-031's and lives in the webapp: merging a
+// fragment into a graph is a person's act.
+func TestAddressedIsReadableAndArrivesUnread(t *testing.T) {
 	s := newServer(t)
 
 	rec, out := call(t, s, "/internal/v1/publish", map[string]any{
@@ -240,45 +249,55 @@ func TestAdmitRequiredBeforeIngest(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("publish: %d %v", rec.Code, out)
 	}
-	sentID := out["activity"].(map[string]any)["id"].(string)
+	objID := out["activity"].(map[string]any)["object"].(map[string]any)["id"].(string)
 
-	// Before admission: held, not ingested.
 	_, out = call(t, s, "/internal/v1/timeline", map[string]any{
 		"tuple": tup("alice"), "reading": "received",
 	}, true)
-	held, _ := out["held"].([]any)
-	claims, _ := out["claims"].([]any)
-	if len(held) != 1 {
-		t.Fatalf("want 1 held item before admission, got %d (%v)", len(held), out)
+	if _, ok := out["held"]; ok {
+		t.Fatalf("the held bucket is still on the wire: %v", out)
 	}
-	if len(claims) != 0 {
-		t.Fatalf("an unadmitted object is already in the agent's memory: %v", claims)
+	claims, _ := out["claims"].([]any)
+	if len(claims) != 1 {
+		t.Fatalf("want the item readable straight away, got %d claims (%v)", len(claims), out)
+	}
+	if read, _ := claims[0].(map[string]any)["read"].(bool); read {
+		t.Fatalf("something nobody has opened arrived already read: %v", claims[0])
 	}
 
-	// Admit, then it is ingested.
-	rec, _ = call(t, s, "/internal/v1/admit", map[string]any{
-		"tuple": tup("alice"), "as": "person", "activityId": sentID,
+	// Opening it is a Read receipt against the OBJECT, which is what the react
+	// endpoint has emitted since before anything consumed it.
+	rec, _ = call(t, s, "/internal/v1/react", map[string]any{
+		"tuple": tup("alice"), "as": "person", "kind": "read", "ref": objID,
 	}, true)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("admit: %d", rec.Code)
+		t.Fatalf("react read: %d", rec.Code)
 	}
 
 	_, out = call(t, s, "/internal/v1/timeline", map[string]any{
 		"tuple": tup("alice"), "reading": "received",
 	}, true)
-	held, _ = out["held"].([]any)
 	claims, _ = out["claims"].([]any)
-	if len(held) != 0 || len(claims) != 1 {
-		t.Fatalf("after admission want 0 held / 1 claim, got %d/%d (%v)", len(held), len(claims), out)
+	if len(claims) != 1 {
+		t.Fatalf("reading it changed how many there are: %v", out)
+	}
+	if read, _ := claims[0].(map[string]any)["read"].(bool); !read {
+		t.Fatalf("the receipt did not come back as read: %v", claims[0])
+	}
+	// AND IT IS STILL IN THE SAME LIST. The inbox has one, so opening something
+	// must not move it anywhere -- that was the old two-bucket behaviour.
+	if _, ok := out["held"]; ok {
+		t.Fatalf("a second list came back: %v", out)
 	}
 }
 
-// ONE RECIPIENT'S ADMISSION MUST NOT CLEAR ANOTHER'S HOLD.
+// ONE RECIPIENT READING SOMETHING DOES NOT READ IT FOR ANOTHER.
 //
-// Keying admission by activity alone makes Carol's Accept let the object into
-// Alice's agent, which is precisely the thing FR-B7 exists to stop: memory
-// entering somebody's agent without that person admitting it.
-func TestAdmissionIsPerRecipient(t *testing.T) {
+// This was the hold's per-recipient rule and it survives the hold: a receipt is
+// keyed by object AND by the actor that emitted it, so Carol opening her copy
+// must leave Alice's unread. Keyed by object alone, an inbox would mark itself
+// read whenever anybody else opened their own mail.
+func TestReadReceiptIsPerRecipient(t *testing.T) {
 	s := newServer(t)
 	s.Members = threeMembers{}
 
@@ -287,30 +306,178 @@ func TestAdmissionIsPerRecipient(t *testing.T) {
 		"to":     []string{actor.ServiceID("alice"), actor.ServiceID("carol")},
 		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "6.4"},
 	}, true)
-	sentID := out["activity"].(map[string]any)["id"].(string)
+	objID := out["activity"].(map[string]any)["object"].(map[string]any)["id"].(string)
 
-	// Carol admits it for herself.
-	rec, _ := call(t, s, "/internal/v1/admit", map[string]any{
-		"tuple": tup("carol"), "as": "person", "activityId": sentID,
+	// Carol opens hers.
+	rec, _ := call(t, s, "/internal/v1/react", map[string]any{
+		"tuple": tup("carol"), "as": "person", "kind": "read", "ref": objID,
 	}, true)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("carol could not admit: %d", rec.Code)
+		t.Fatalf("carol could not read: %d", rec.Code)
 	}
 
-	// Alice admitted nothing, so for Alice it is still held.
+	// Alice opened nothing, so for Alice it is unread.
 	_, out = call(t, s, "/internal/v1/timeline", map[string]any{
 		"tuple": tup("alice"), "reading": "received",
 	}, true)
-	held, _ := out["held"].([]any)
 	claims, _ := out["claims"].([]any)
-	if len(held) != 1 || len(claims) != 0 {
-		t.Fatalf("carol's admission leaked into alice's agent: held=%d claims=%d (%v)", len(held), len(claims), out)
+	if len(claims) != 1 {
+		t.Fatalf("alice should still have the one item: %v", out)
+	}
+	if read, _ := claims[0].(map[string]any)["read"].(bool); read {
+		t.Fatalf("carol reading hers marked alice's as read: %v", claims[0])
+	}
+	// AND ALICE IS NOT TOLD ABOUT CAROL. Receipts are the author's; a recipient
+	// gets their own answer and no names.
+	if _, ok := claims[0].(map[string]any)["readBy"]; ok {
+		t.Fatalf("a recipient was told who else had opened it: %v", claims[0])
 	}
 }
 
-// A governing role holder accepting a group publication must not clear the
-// hold for the direct addressees of that same activity either.
-func TestGovernanceDecisionIsNotAnAdmission(t *testing.T) {
+// THE RECEIPT GOES BACK TO THE AUTHOR, which is the half a recipient never
+// sees. It is derived from the log rather than stored: the recipient's Read is
+// already an entry in the same shard, so the author's own reading only has to
+// stop throwing it away.
+//
+// SAME SUBSCRIPTION ONLY, and that is a real limit rather than an oversight.
+// `emit` appends to the CALLER's shard, keyed (tenant, subscription), so a
+// receipt from somebody in another subscription lands where this author does
+// not read. Cross-shard receipts need federation that does not exist yet.
+func TestTheAuthorSeesWhoOpenedIt(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+
+	_, out := call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple": tup("alice"), "as": "person",
+		"to":     []string{actor.ServiceID("bob"), actor.ServiceID("carol")},
+		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "6.4"},
+	}, true)
+	objID := out["activity"].(map[string]any)["object"].(map[string]any)["id"].(string)
+
+	published := func() map[string]any {
+		t.Helper()
+		_, out := call(t, s, "/internal/v1/timeline", map[string]any{
+			"tuple": tup("alice"), "as": "person", "reading": "published",
+		}, true)
+		claims, _ := out["claims"].([]any)
+		if len(claims) != 1 {
+			t.Fatalf("author should see their one publication, got %v", out)
+		}
+		return claims[0].(map[string]any)
+	}
+
+	if _, ok := published()["readBy"]; ok {
+		t.Fatalf("receipts before anybody opened it: %v", published())
+	}
+
+	call(t, s, "/internal/v1/react", map[string]any{
+		"tuple": tup("bob"), "as": "person", "kind": "read", "ref": objID,
+	}, true)
+
+	readBy, _ := published()["readBy"].([]any)
+	if len(readBy) != 1 || readBy[0] != actor.PersonID("bob") {
+		t.Fatalf("want exactly bob's person receipt, got %v", readBy)
+	}
+
+	// CAROL HAS NOT OPENED HERS, and the author must be able to tell. A receipt
+	// list that filled in on delivery would say everybody had read everything.
+	if len(readBy) != 1 {
+		t.Fatalf("carol appeared in the receipts without opening anything: %v", readBy)
+	}
+}
+
+// AN AGENT PASSING OVER SOMETHING IS NOT ITS PERSON READING IT, and the two
+// actors are what keeps them apart. A turn that happened to call the timeline
+// must not send the author a receipt saying their colleague read their memory.
+func TestAnAgentsReceiptIsNotItsPersons(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+
+	_, out := call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple": tup("alice"), "as": "person",
+		"to":     []string{actor.ServiceID("bob")},
+		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "6.4"},
+	}, true)
+	objID := out["activity"].(map[string]any)["object"].(map[string]any)["id"].(string)
+
+	call(t, s, "/internal/v1/react", map[string]any{
+		"tuple": tup("bob"), "as": "service", "kind": "read", "ref": objID,
+	}, true)
+
+	_, out = call(t, s, "/internal/v1/timeline", map[string]any{
+		"tuple": tup("alice"), "as": "person", "reading": "published",
+	}, true)
+	claims, _ := out["claims"].([]any)
+	readBy, _ := claims[0].(map[string]any)["readBy"].([]any)
+	if len(readBy) != 1 || readBy[0] != actor.ServiceID("bob") {
+		t.Fatalf("want the receipt attributed to the agent, got %v", readBy)
+	}
+
+	// AND BOB'S OWN INBOX IS STILL UNREAD. `read` answers for the person; their
+	// agent looking at something is not them opening it.
+	_, out = call(t, s, "/internal/v1/timeline", map[string]any{
+		"tuple": tup("bob"), "as": "person", "reading": "received",
+	}, true)
+	claims, _ = out["claims"].([]any)
+	if read, _ := claims[0].(map[string]any)["read"].(bool); read {
+		t.Fatalf("bob's agent marked bob's mail as read: %v", claims[0])
+	}
+}
+
+// A BUG THIS FEATURE TRIPPED OVER, fixed here because the receipt would have
+// died of it too.
+//
+// Both readings filtered `a.Object == nil` before handing the slice to Reduce --
+// and Like, Read, Add, Remove and Undo all carry no object of their own. So
+// Reduce, which exists to fold exactly those, never saw one: `evidence` was 0 on
+// every claim the HTTP surface had ever returned, in both readings, and a
+// share's widening never reached the audience line. Nothing asserted it, which
+// is why it lasted.
+func TestEndorsementsSurviveTheReading(t *testing.T) {
+	s := newServer(t)
+	s.Members = threeMembers{}
+
+	_, out := call(t, s, "/internal/v1/publish", map[string]any{
+		"tuple": tup("alice"), "as": "person",
+		"to":     []string{actor.ServiceID("bob"), actor.ServiceID("carol")},
+		"object": map[string]any{"type": "MemoryNote", "cell": "soil-ph", "content": "6.4"},
+	}, true)
+	objID := out["activity"].(map[string]any)["object"].(map[string]any)["id"].(string)
+
+	for _, who := range []string{"bob", "carol"} {
+		rec, _ := call(t, s, "/internal/v1/react", map[string]any{
+			"tuple": tup(who), "as": "person", "kind": "like", "ref": objID,
+		}, true)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s could not endorse: %d", who, rec.Code)
+		}
+	}
+
+	for _, who := range []string{"bob", "alice"} {
+		reading := "received"
+		if who == "alice" {
+			reading = "published"
+		}
+		_, out := call(t, s, "/internal/v1/timeline", map[string]any{
+			"tuple": tup(who), "as": "person", "reading": reading,
+		}, true)
+		claims, _ := out["claims"].([]any)
+		if len(claims) != 1 {
+			t.Fatalf("%s sees %d claims", who, len(claims))
+		}
+		if ev, _ := claims[0].(map[string]any)["evidence"].(float64); ev != 2 {
+			t.Errorf("%s reading %s sees evidence %v, want 2", who, reading, ev)
+		}
+	}
+}
+
+// A GOVERNANCE ACCEPT IS NOT A RECEIPT, which is the same separation the hold
+// needed and for a sharper reason now: the two verbs no longer even name the
+// same kind of thing. A decision's `inReplyTo` is an ACTIVITY id and a receipt's
+// is an OBJECT id, so folding one into the other cannot happen by accident --
+// and this asserts that a governor deciding a publication does not mark it read
+// for the people it was addressed to.
+func TestGovernanceDecisionIsNotAReceipt(t *testing.T) {
 	s := newServer(t)
 	s.Members = threeMembers{}
 
@@ -339,8 +506,12 @@ func TestGovernanceDecisionIsNotAnAdmission(t *testing.T) {
 	_, out = call(t, s, "/internal/v1/timeline", map[string]any{
 		"tuple": tup("alice"), "reading": "received",
 	}, true)
-	if held, _ := out["held"].([]any); len(held) != 1 {
-		t.Fatalf("a governance Accept cleared a direct addressee's hold: %v", out)
+	claims, _ := out["claims"].([]any)
+	if len(claims) != 1 {
+		t.Fatalf("alice should see the decided publication: %v", out)
+	}
+	if read, _ := claims[0].(map[string]any)["read"].(bool); read {
+		t.Fatalf("a governance Accept read it on the addressee's behalf: %v", claims[0])
 	}
 }
 
@@ -559,12 +730,9 @@ func TestRevokeReachesTheRecipientAndNotOnlyTheAuthor(t *testing.T) {
 	act := out["activity"].(map[string]any)
 	objID := act["object"].(map[string]any)["id"].(string)
 
-	rec, _ := call(t, s, "/internal/v1/admit", map[string]any{
-		"tuple": tup("bob"), "as": "person", "activityId": act["id"].(string),
-	}, true)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("admit: %d", rec.Code)
-	}
+	// There is no admission step any more: addressed is readable. `act` is kept
+	// for the object id above, which is what the revoke names.
+	_ = act
 
 	deletedForBob := func() (int, bool) {
 		t.Helper()
@@ -582,7 +750,7 @@ func TestRevokeReachesTheRecipientAndNotOnlyTheAuthor(t *testing.T) {
 		t.Fatalf("before the revoke bob should hold one live claim, got n=%d deleted=%v", n, deleted)
 	}
 
-	rec, _ = call(t, s, "/internal/v1/revoke", map[string]any{
+	rec, _ := call(t, s, "/internal/v1/revoke", map[string]any{
 		"tuple": tup("alice"), "as": "person", "objectId": objID, "cell": "soil-ph",
 	}, true)
 	if rec.Code != http.StatusOK {
@@ -654,10 +822,15 @@ func TestARevokeReachesPeopleAddedAfterTheFirstPublication(t *testing.T) {
 	}
 }
 
-// Something withdrawn before it was ever taken simply goes away. Leaving it in
-// the held list would offer an Admit for content the author has already
-// recalled -- and taking it would put recalled content into the agent's memory.
-func TestRevokingSomethingStillHeldWithdrawsItEntirely(t *testing.T) {
+// SOMETHING WITHDRAWN BEFORE ITS RECIPIENT EVER OPENED IT.
+//
+// This used to be about the held list: a recall had to take the item out of it,
+// or the member would be offered an Admit for content the author had already
+// pulled. With one list the shape of the answer changes -- the claim is still
+// there and reads as `deleted`, which is what a tombstone is for -- but the
+// thing being pinned is the same one. A recall must reach a recipient who had
+// not got to it yet, which is exactly the recipient it matters most for.
+func TestRevokingSomethingNeverOpenedWithdrawsItEntirely(t *testing.T) {
 	s := newServer(t)
 	s.Members = threeMembers{}
 
@@ -668,19 +841,24 @@ func TestRevokingSomethingStillHeldWithdrawsItEntirely(t *testing.T) {
 	}, true)
 	objID := out["activity"].(map[string]any)["object"].(map[string]any)["id"].(string)
 
-	bobSees := func() (held, claims int) {
+	bobSees := func() (n int, deleted, read bool) {
 		t.Helper()
 		_, out := call(t, s, "/internal/v1/timeline", map[string]any{
 			"tuple": tup("bob"), "reading": "received",
 		}, true)
-		h, _ := out["held"].([]any)
 		c, _ := out["claims"].([]any)
-		return len(h), len(c)
+		if len(c) == 0 {
+			return 0, false, false
+		}
+		m := c[0].(map[string]any)
+		d, _ := m["deleted"].(bool)
+		r, _ := m["read"].(bool)
+		return len(c), d, r
 	}
 
-	// bob has NOT admitted it: it is held.
-	if h, _ := bobSees(); h != 1 {
-		t.Fatalf("expected one held item before the revoke, got %d", h)
+	// Bob has it and has NOT opened it.
+	if n, deleted, read := bobSees(); n != 1 || deleted || read {
+		t.Fatalf("before the revoke want 1 live unread claim, got n=%d deleted=%v read=%v", n, deleted, read)
 	}
 
 	rec, _ := call(t, s, "/internal/v1/revoke", map[string]any{
@@ -690,9 +868,8 @@ func TestRevokingSomethingStillHeldWithdrawsItEntirely(t *testing.T) {
 		t.Fatalf("revoke: %d", rec.Code)
 	}
 
-	h, _ := bobSees()
-	if h != 0 {
-		t.Errorf("a recalled item is still offered for admission: %d held", h)
+	if _, deleted, _ := bobSees(); !deleted {
+		t.Errorf("a recall did not reach the recipient who had not opened it yet")
 	}
 }
 
@@ -935,9 +1112,9 @@ func TestAMemberReadsWhatEitherOfTheirActorsWasAddressed(t *testing.T) {
 		_, out := call(t, s, "/internal/v1/timeline", map[string]any{
 			"tuple": tup("bob"), "as": as, "reading": "received",
 		}, true)
-		held, _ := out["held"].([]any)
-		if len(held) != 2 {
-			t.Errorf("reading as %s, bob holds %d of the 2 things addressed to his two actors", as, len(held))
+		claims, _ := out["claims"].([]any)
+		if len(claims) != 2 {
+			t.Errorf("reading as %s, bob sees %d of the 2 things addressed to his two actors", as, len(claims))
 		}
 	}
 }

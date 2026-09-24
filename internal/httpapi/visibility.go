@@ -28,11 +28,23 @@ const (
 	reachNone reachOf = iota
 	// reachOwn: this member wrote it, as either of their two actors.
 	reachOwn
-	// reachHeld: addressed AT them and not yet admitted BY them. Visible to the
-	// human, not yet in their agent's memory.
-	reachHeld
-	// reachVisible: theirs to read -- admitted, or reaching them through a group
-	// whose publication a governing role has accepted.
+	// reachVisible: theirs to read -- addressed at them, or reaching them
+	// through a group whose publication a governing role has accepted.
+	//
+	// THERE USED TO BE A FOURTH, `reachHeld`: addressed at somebody and not yet
+	// admitted by them, described as "visible to the human, not yet in their
+	// agent's memory". It never was that. The held item was returned WITH ITS
+	// OBJECT, and the viewer is built from the tuple and never from the calling
+	// actor, so the agent's `mangrove_timeline` got the same bytes the person's
+	// did -- and the tool's own description told it so out loud. On top of
+	// which the agent had a `mangrove_admit` of its own and could clear the
+	// hold unasked.
+	//
+	// What actually keeps shared memory out of an agent is AD-031: merging a
+	// fragment into the graph is a person's act, in their interface, and that
+	// is untouched. This was a gate in the comments only, so it is gone rather
+	// than left half-enforced. Read receipts carry what it was really being
+	// read as -- whether this member has opened the thing yet.
 	reachVisible
 )
 
@@ -41,7 +53,6 @@ const (
 // from the whole shard.
 type viewer struct {
 	me, mine string
-	admitted map[string]map[string]bool
 	governed map[string]bool
 	// shared is who a SHARE added to an object after it was published, per
 	// object id. An Add carries no object of its own -- only the id it widens
@@ -55,16 +66,9 @@ func newViewer(t actor.Tuple, acts []activity.Activity) viewer {
 	return viewer{
 		me:       actor.PersonID(t.UserAccID),
 		mine:     actor.ServiceID(t.UserAccID),
-		admitted: admissions(acts),
 		governed: governanceDecisions(acts),
 		shared:   sharedAddressees(acts),
 	}
-}
-
-// admittedByMe is admitted BY THIS MEMBER, not by anybody. One recipient
-// accepting must not clear another recipient's hold.
-func (v viewer) admittedByMe(activityID string) bool {
-	return v.admitted[activityID][v.me] || v.admitted[activityID][v.mine]
 }
 
 // sharedAddressees collects what each Add granted and each Remove took back,
@@ -163,26 +167,20 @@ func (v viewer) reach(a activity.Activity) reachOf {
 		return reachNone
 	}
 
-	// A TOMBSTONE IS NEVER HELD. The hold exists so that content does not enter
-	// an agent's memory before its human takes it; a Delete is not content, and
-	// nobody admits a withdrawal. Held, it would sit waiting for an admission
-	// that never comes while the claim it withdraws went on reading as live --
-	// which is exactly the shipped defect this rule was extracted to stop
-	// happening twice.
-	if a.Type == activity.Delete {
-		return reachVisible
-	}
-
-	if at.direct && !v.admittedByMe(a.ID) {
-		return reachHeld
-	}
+	// A TOMBSTONE USED TO NEED SAYING HERE. While there was a hold, a Delete
+	// addressed at somebody sat in it waiting for an admission nobody gives to
+	// a withdrawal, while the claim it withdrew went on reading as live -- a
+	// shipped defect, and the reason this function was extracted at all. With
+	// the hold gone the exception has nothing left to be an exception to, which
+	// is the good kind of deletion: the case cannot come back because the state
+	// it depended on no longer exists.
 	return reachVisible
 }
 
 // reachable is every activity in the shard this member can see at all, in any
-// of the three ways. It is what a question about CONTENT -- rather than about
-// one reading -- has to start from, because a member may legitimately open a
-// file they published, one they were sent and admitted, and one still held.
+// of the ways. It is what a question about CONTENT -- rather than about one
+// reading -- has to start from, because a member may legitimately open a file
+// they published and one they were sent.
 func (v viewer) reachable(acts []activity.Activity) []activity.Activity {
 	out := make([]activity.Activity, 0, len(acts))
 	for _, a := range acts {
