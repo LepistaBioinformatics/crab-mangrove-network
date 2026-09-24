@@ -105,7 +105,6 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.Handle("POST /internal/v1/publish", s.auth(s.handlePublish))
 	mux.Handle("POST /internal/v1/share", s.auth(s.handleShare))
 	mux.Handle("POST /internal/v1/react", s.auth(s.handleReact))
-	mux.Handle("POST /internal/v1/admit", s.auth(s.handleAdmit))
 	mux.Handle("POST /internal/v1/decide", s.auth(s.handleDecide))
 	mux.Handle("POST /internal/v1/revoke", s.auth(s.handleRevoke))
 	mux.Handle("POST /internal/v1/timeline", s.auth(s.handleTimeline))
@@ -481,43 +480,18 @@ func (s *Server) handleReact(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"activity": a})
 }
 
-// ---------------------------------------------------------------- admit
-
-type admitReq struct {
-	base
-	ActivityID string `json:"activityId"`
-}
-
-// handleAdmit is FR-B7: an object addressed directly at somebody becomes
-// visible to that HUMAN, and does not enter their AGENT's memory until it is
-// admitted.
+// THE ADMIT ENDPOINT IS GONE, and what it was for is worth leaving written
+// down. FR-B7 held anything addressed directly at a member until they admitted
+// it, on the stated grounds that untrusted text would otherwise be one share
+// away from a colleague's agent's memory. It never held that: the held item
+// went out with its object, the viewer was built from the tuple rather than
+// from the calling actor, and the agent had an admit of its own. The property
+// FR-B7 wanted is AD-031's -- merging a fragment into a graph is a person's
+// act, in their interface -- and that one is real and untouched.
 //
-// Without this, placing text into a colleague's agent's memory would be one
-// share away -- and since memory steers turns, so would steering their agent.
-// The subordination of bot to human would then hold only for one's own bot,
-// which is the half that does not need protecting.
-func (s *Server) handleAdmit(w http.ResponseWriter, r *http.Request) {
-	var req admitReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "malformed body")
-		return
-	}
-	if req.ActivityID == "" {
-		writeErr(w, http.StatusBadRequest, "activityId is required")
-		return
-	}
-	author, _, err := s.signer(req.base)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	a := activity.Activity{Type: activity.Accept, InReplyTo: req.ActivityID}
-	if err := s.emit(req.Tuple, author, &a); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"activity": a, "admitted": req.ActivityID})
-}
+// What the button was actually doing for members was inbox bookkeeping, so
+// that is what it is now: `react` with kind `read`, which has emitted AS2's
+// Read since before anything consumed it.
 
 // ---------------------------------------------------------------- decide
 
@@ -662,15 +636,7 @@ type timelineReq struct {
 type timelineResp struct {
 	Reading string              `json:"reading"`
 	Claims  []mangrovelog.Claim `json:"claims,omitempty"`
-	Held    []heldItem          `json:"held,omitempty"`
 	Pending []pendingDecision   `json:"pending,omitempty"`
-}
-
-type heldItem struct {
-	ActivityID string          `json:"activityId"`
-	From       string          `json:"from"`
-	Object     activity.Object `json:"object"`
-	Published  string          `json:"published"`
 }
 
 type pendingDecision struct {
@@ -750,7 +716,12 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 				own = append(own, a)
 			}
 		}
-		reduced := mangrovelog.Reduce(own)
+		// PLUS WHAT OTHERS SAID ABOUT IT. A recipient's Read and Like are not
+		// the author's own activities, so `reachOwn` excludes them and the
+		// author used to be shown `evidence: 0` on everything they had ever
+		// published. The receipts this reading exists to carry would have
+		// arrived empty for exactly the same reason.
+		reduced := mangrovelog.Reduce(withMetaAbout(own, acts))
 		writeJSON(w, http.StatusOK, timelineResp{Reading: "published", Claims: flatten(reduced)})
 
 	case "pending":
@@ -772,98 +743,44 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, timelineResp{Reading: "pending", Pending: out})
 
 	default: // received
+		// ONE LIST. There were two -- what had been admitted, and a `held` list
+		// beside it for what had not -- and the second is gone with the hold
+		// that produced it. Whether this member has opened something is a Read
+		// receipt on the claim now, which is a property OF the item rather than
+		// a different list to put it in.
 		var visible []activity.Activity
-		var held []heldItem
-		// (cell, author) pairs this member has been told are withdrawn.
-		tombstoned := map[string]bool{}
-
 		for _, a := range acts {
 			if a.Object == nil {
 				continue
 			}
-			switch v.reach(a) {
-			case reachHeld:
-				// FR-B7: visible to the human, NOT yet in the agent's memory.
-				// The hold is cleared only by THIS member admitting it.
-				held = append(held, heldItem{
-					ActivityID: a.ID, From: a.Actor,
-					Object: *a.Object, Published: a.Published,
-				})
-			case reachVisible:
+			if v.reach(a) == reachVisible {
 				visible = append(visible, a)
-				if a.Type == activity.Delete {
-					tombstoned[a.Object.Cell+"\x00"+a.Actor] = true
-				}
 			}
 		}
-
-		// Something withdrawn before it was ever taken simply goes away. Leaving
-		// it in the held list would offer an Admit for content the author has
-		// already recalled.
-		if len(tombstoned) > 0 {
-			kept := held[:0]
-			for _, h := range held {
-				if !tombstoned[h.Object.Cell+"\x00"+h.From] {
-					kept = append(kept, h)
-				}
-			}
-			held = kept
+		claims := flatten(mangrovelog.Reduce(withMetaAbout(visible, acts)))
+		// WHO ELSE OPENED IT IS NOT THIS READER'S BUSINESS. Receipts go to the
+		// author, who addressed the thing; a recipient gets the one answer they
+		// need, which is whether THEY have opened it. Evidence beside it is a
+		// count on purpose and names nobody.
+		for i := range claims {
+			claims[i].Read = contains(claims[i].ReadBy, v.me)
+			claims[i].ReadBy = nil
 		}
-		writeJSON(w, http.StatusOK, timelineResp{
-			Reading: "received",
-			Claims:  flatten(mangrovelog.Reduce(visible)),
-			Held:    held,
-		})
+		writeJSON(w, http.StatusOK, timelineResp{Reading: "received", Claims: claims})
 	}
 }
 
-// admissions and governanceDecisions are TWO DIFFERENT THINGS, and collapsing
-// them into one "has it been decided" set is a real hole rather than an
-// untidiness.
+// GOVERNANCE DECISIONS, and there used to be a sibling here: admissions, which
+// collected a recipient's Accept over an activity addressed at them. Both were
+// expressed as Accept and were told apart by `target` -- a governance decision
+// carries the scope, an admission does not -- and keeping them apart was load
+// bearing, because one role holder accepting a group publication must not clear
+// every direct addressee's hold.
 //
-// Both are expressed as Accept/Reject on a prior activity, because those are
-// the right standard verbs for both. They differ in who is answering and on
-// whose behalf:
-//
-//	ADMISSION  -- a recipient letting an object into THEIR OWN agent's memory
-//	              (FR-B7). Keyed by activity AND by the actor who admitted.
-//	GOVERNANCE -- a role holder deciding whether a cross-scope publication may
-//	              travel (FR-F2). Carries the scope in `target`.
-//
-// Keying admission by activity alone would mean one recipient's Accept cleared
-// the hold for EVERY other addressee of the same activity -- and a governing
-// role holder accepting a group publication would clear it for every direct
-// addressee too. That is exactly the failure FR-B7 exists to prevent: memory
-// entering somebody's agent without that person admitting it.
-func admissions(acts []activity.Activity) map[string]map[string]bool {
-	out := map[string]map[string]bool{}
-	for _, a := range acts {
-		if a.Type != activity.Accept || a.InReplyTo == "" {
-			continue
-		}
-		if strings.HasPrefix(a.Target, "mangrove:group:") {
-			continue // a governance decision, not an admission
-		}
-		if out[a.InReplyTo] == nil {
-			out[a.InReplyTo] = map[string]bool{}
-		}
-		out[a.InReplyTo][a.Actor] = true
-	}
-	return out
-}
+// The holds are gone, so only this half is left. The `target` rule stays exactly
+// as it was: it is what makes a governance Accept a governance Accept, and a
+// reader that guessed from the verb alone would still be wrong.
 
-// governanceDecisions maps a group publication to HOW it was decided: present in
-// the map means decided at all, and the value says whether it was accepted.
-//
-// TWO QUESTIONS, AND THEY ARE NOT THE SAME ONE. "Has a role holder dealt with
-// this?" decides whether it still belongs in the pending list; "may the scope
-// read it?" decides whether it travels. A single boolean meaning "decided"
-// answered both, so a REJECT published the thing to the entire scope -- the
-// exact opposite of what rejecting it means, and the decision that looked most
-// like it had worked.
-//
-// The last decision wins, because iteration follows log order. A role holder
-// changing their mind is a normal thing for them to do.
 func governanceDecisions(acts []activity.Activity) map[string]bool {
 	out := map[string]bool{}
 	for _, a := range acts {
@@ -886,6 +803,52 @@ func scopeOf(a activity.Activity) string {
 		}
 	}
 	return ""
+}
+
+// withMetaAbout adds back the activities that say something ABOUT an object in
+// `base` -- Read, Like, Add, Remove and their Undo.
+//
+// THEY CARRY NO OBJECT OF THEIR OWN, which is how they came to be dropped: both
+// readings filtered on `a.Object == nil` before handing the slice to Reduce, and
+// Reduce is the thing that folds them. So `evidence` was 0 on every claim the
+// HTTP surface ever returned, and a share's widening never reached the audience
+// line -- the same defect Reduce's Add/Remove arm was written to fix, undone one
+// layer up.
+//
+// VISIBILITY COMES FROM THE OBJECT, not from the meta activity. A Like is
+// addressed to nobody, so asking `reach` about one answers "no reach" and always
+// would; what decides whether this reader may know an object was endorsed is
+// whether they may see the object. So: this reader's own objects, and nothing
+// said about anything else.
+func withMetaAbout(base, all []activity.Activity) []activity.Activity {
+	if len(base) == 0 {
+		return base
+	}
+	seen := make(map[string]bool, len(base))
+	for _, a := range base {
+		if a.Object != nil {
+			seen[a.Object.ID] = true
+		}
+	}
+	out := base
+	for _, a := range all {
+		// `InReplyTo` on these names the OBJECT. An Accept or a Reject names an
+		// ACTIVITY instead, so neither can match and neither is folded here --
+		// which is what keeps a governance decision out of a claim.
+		if a.Object == nil && a.InReplyTo != "" && seen[a.InReplyTo] {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func contains(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }
 
 func flatten(m map[string][]mangrovelog.Claim) []mangrovelog.Claim {

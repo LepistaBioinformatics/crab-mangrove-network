@@ -183,6 +183,26 @@ type Claim struct {
 	// Audience is the addressing of the winning activity, so a reader can see
 	// how far this claim travelled.
 	Audience []string `json:"audience"`
+	// ReadBy is every actor that emitted a Read receipt against this claim's
+	// object, sorted. AS2's Read is "the actor has read the object", and the
+	// react endpoint has emitted it since before anything consumed it -- this
+	// is the consumer.
+	//
+	// ACTOR IDS AND NOT A COUNT, because who read it is the question and the
+	// two actors of one member are different answers. A person's receipt is
+	// that member reading their mail; their agent's is a turn passing over it,
+	// which is not something to tell a sender their colleague did.
+	//
+	// It is keyed on the OBJECT id, like Evidence beside it, so an Update keeps
+	// the receipts the Create earned -- somebody who read a memory has read it,
+	// and a correction by its author does not make that untrue.
+	ReadBy []string `json:"readBy,omitempty"`
+	// Read is "the reader this response was built for has opened it", and it is
+	// what a RECIPIENT is told. ReadBy goes to the author, who addressed the
+	// thing and may know who opened it; telling every recipient who else had
+	// would be a different feature nobody asked for. The reduction fills ReadBy
+	// and the handler collapses it -- one of the two is always nil on the wire.
+	Read bool `json:"read,omitempty"`
 	// Action is the winning activity's verb, in the vocabulary a reader speaks:
 	// "published", "updated" or "revoked".
 	//
@@ -249,6 +269,9 @@ func Reduce(acts []activity.Activity) map[string][]Claim {
 	// Endorsements are counted per (object id, endorsing actor) so that one
 	// actor liking the same object twice still weighs one.
 	endorsed := map[string]map[string]bool{}
+	// Receipts, counted the same way and for the same reason: one actor reading
+	// the same object twice has read it once.
+	readBy := map[string]map[string]bool{}
 	// Addressees a share ADDED after publication, per object id, and whether
 	// they are still on it.
 	shared := map[string]map[string]bool{}
@@ -271,6 +294,14 @@ func Reduce(acts []activity.Activity) map[string][]Claim {
 				endorsed[a.InReplyTo] = map[string]bool{}
 			}
 			endorsed[a.InReplyTo][a.Actor] = true
+		case activity.Read:
+			if a.InReplyTo == "" {
+				continue
+			}
+			if readBy[a.InReplyTo] == nil {
+				readBy[a.InReplyTo] = map[string]bool{}
+			}
+			readBy[a.InReplyTo][a.Actor] = true
 		case activity.Add, activity.Remove:
 			// A SHARE WIDENS AN OBJECT THAT ALREADY EXISTS. It carries no object
 			// of its own -- only the id in InReplyTo and the new addressee -- so
@@ -294,8 +325,21 @@ func Reduce(acts []activity.Activity) map[string][]Claim {
 			// endorsement of the same object -- they are different verbs and
 			// an Undo that does not name one is ambiguous, so it is ignored
 			// here rather than guessed at.
-			if a.UndoType == activity.Like && a.InReplyTo != "" && endorsed[a.InReplyTo] != nil {
-				delete(endorsed[a.InReplyTo], a.Actor)
+			if a.InReplyTo == "" {
+				continue
+			}
+			switch a.UndoType {
+			case activity.Like:
+				if endorsed[a.InReplyTo] != nil {
+					delete(endorsed[a.InReplyTo], a.Actor)
+				}
+			case activity.Read:
+				// Marking something unread again. The comment above is why this
+				// has to name the verb: without UndoType the two are one
+				// activity and this would withdraw an endorsement instead.
+				if readBy[a.InReplyTo] != nil {
+					delete(readBy[a.InReplyTo], a.Actor)
+				}
 			}
 		}
 	}
@@ -309,6 +353,7 @@ func Reduce(acts []activity.Activity) map[string][]Claim {
 			Deleted:   a.Type == activity.Delete,
 			Action:    verb(a.Type),
 			Evidence:  len(endorsed[a.Object.ID]),
+			ReadBy:    sortedActors(readBy[a.Object.ID]),
 			Audience:  audienceWith(a, shared[a.Object.ID]),
 		}
 		if a.Object != nil {
@@ -322,5 +367,20 @@ func Reduce(acts []activity.Activity) map[string][]Claim {
 		sort.Slice(claims, func(i, j int) bool { return claims[i].Author < claims[j].Author })
 		out[cell] = claims
 	}
+	return out
+}
+
+// sortedActors is the stable rendering of a receipt set. Nil for none rather
+// than an empty slice, so `omitempty` keeps it off the wire for the overwhelming
+// majority of claims nobody has opened yet.
+func sortedActors(set map[string]bool) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	sort.Strings(out)
 	return out
 }
